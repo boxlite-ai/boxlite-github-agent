@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { signJobToken, verifyJobToken, jobTokens, chatgptLogin, CLIENT_ID, BOX_ACCOUNT_ID } from '../src/chatgpt.mjs'
+import { EventEmitter } from 'node:events'
+import { signJobToken, verifyJobToken, jobTokens, chatgptLogin, parseDevicePrompt, deviceLogin, CLIENT_ID, BOX_ACCOUNT_ID } from '../src/chatgpt.mjs'
 
 const SECRET = Buffer.from('job-secret')
 const future = () => Math.floor(Date.now() / 1000) + 60
@@ -66,4 +67,53 @@ test('login: a failed refresh throws and keeps the old tokens; an incomplete see
   writeFileSync(file, JSON.stringify({ access_token: 'x' }))
   await assert.rejects(chatgptLogin({ file, initial }).load(), /ChatGPT login incomplete/)
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).access_token, 'x')
+})
+
+
+test('login: no source yet → false; a device login done in this box counts; the newest source wins', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cg-'))
+  const file = path.join(dir, 'chatgpt.json')
+  const codexAuthFile = path.join(dir, 'codex-login', 'auth.json')
+  const none = chatgptLogin({ file, codexAuthFile })
+  assert.equal(await none.load(), false)
+
+  mkdirSync(path.dirname(codexAuthFile))
+  writeFileSync(codexAuthFile, JSON.stringify({ tokens: { access_token: 'at-dev', refresh_token: 'rt-dev', account_id: 'acct-dev' }, last_refresh: '2026-09-21T10:00:00Z' }))
+  const fromDevice = chatgptLogin({ file, codexAuthFile, initial: { ...initial, last_refresh: '2026-09-01T00:00:00Z' } })
+  assert.equal(await fromDevice.load(), true)
+  assert.equal(fromDevice.get().refresh_token, 'rt-dev') // newer than the deploy seed
+
+  writeFileSync(file, JSON.stringify({ access_token: 'at-own', refresh_token: 'rt-own', account_id: 'acct-dev', last_refresh: '2026-09-28T00:00:00Z' }))
+  const own = chatgptLogin({ file, codexAuthFile })
+  await own.load()
+  assert.equal(own.get().refresh_token, 'rt-own') // our rotated copy is newest
+})
+
+test('parseDevicePrompt: link and one-time code out of the coloured Codex output', () => {
+  const out = '\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mQ0F1-3ACRA\x1b[0m\n'
+  assert.deepEqual(parseDevicePrompt(out), { url: 'https://auth.openai.com/codex/device', code: 'Q0F1-3ACRA' })
+  assert.equal(parseDevicePrompt('Welcome to Codex'), null)
+})
+
+test('deviceLogin: runs codex login --device-auth in the given home, reports the prompt once, resolves with the exit code', async () => {
+  const calls = []
+  const spawnImpl = (bin, args, opts) => {
+    calls.push({ bin, args, env: opts.env })
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    setTimeout(() => {
+      child.stdout.emit('data', '1. Open https://auth.openai.com/codex/device\n')
+      child.stdout.emit('data', '2. Enter this one-time code\n   ABCD-EFGHI\n')
+      child.stdout.emit('data', 'ABCD-EFGHI again\n')
+      child.emit('close', 0)
+    }, 5)
+    return child
+  }
+  const prompts = []
+  const code = await deviceLogin({ codexHome: '/state/codex-login', onPrompt: (p) => prompts.push(p), spawnImpl })
+  assert.equal(code, 0)
+  assert.deepEqual(prompts, [{ url: 'https://auth.openai.com/codex/device', code: 'ABCD-EFGHI' }])
+  assert.deepEqual(calls[0].args, ['login', '--device-auth', '-c', 'cli_auth_credentials_store="file"'])
+  assert.equal(calls[0].env.CODEX_HOME, '/state/codex-login')
 })
