@@ -205,6 +205,7 @@ async function handle(req) {
     }
     state.threads[key] = { sessionId: out.sessionId ?? null, headSha: pr?.headSha ?? known?.headSha ?? null, lastUsed: new Date().toISOString() }
     persist()
+    await req.ack // the 👀 always lands before the answer
     if (out.message) {
       await reply(gh, req, out.message)
       log(`${key}: answered @${req.author}`)
@@ -231,7 +232,8 @@ function accept(req, via = 'poll') {
     return
   }
   log(`${req.repo}#${req.number}: request from @${req.author} via ${via} (${req.url})`)
-  react(gh, req).catch(() => {})
+  // 👀 the moment we have it — not queued behind other turns; the reply waits for it (handle()).
+  req.ack = react(gh, req).catch((e) => log(`${req.repo}#${req.number}: 👀 reaction failed: ${e.message}`))
   inflight++
   schedule(`${req.repo}#${req.number}`, () => handle(req)).finally(() => inflight--)
 }
