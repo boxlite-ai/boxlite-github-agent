@@ -65,7 +65,7 @@ permissions:
   checks: write
   id-token: write            # lets the run fetch its OIDC token
 steps:
-  - uses: boxlite-ai/pr-review-agent@v1
+  - uses: boxlite-ai/boxlite-github-agent@v1
     with:
       boxlite-api-key: ${{ secrets.BOXLITE_API_KEY }}
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -52,7 +52,7 @@ async function startReview(env, url, keys, { repo, owner, name, prNumber, headSh
     repo: name,
     permissions: { contents: 'read', metadata: 'read' },
   })
-  const box = await createBox(keys.boxliteKey, env.BOXLITE_URL, `pr-review-${name}-${prNumber}`.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 60))
+  const box = await createBox(keys.boxliteKey, env.BOXLITE_URL, `github-agent-${name}-${prNumber}`.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 60))
   const boxId = box.id || box.name
   const job = await mintJob(env.STORE_SECRET, { repo, pr: prNumber, headSha, baseRef, boxId, installationId })
   await startExecution(keys.boxliteKey, env.BOXLITE_URL, boxId, {

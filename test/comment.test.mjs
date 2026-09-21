@@ -43,6 +43,18 @@ test('PATCHes the existing marked comment (sticky reuse)', async () => {
   assert.ok(calls[1].url.endsWith('/repos/acme/app/issues/comments/222'))
 })
 
+test('adopts a pre-rename sticky (legacy marker) instead of posting a duplicate', async () => {
+  const { impl, calls } = fakeFetch([
+    { ok: true, json: [{ id: 444, body: '<!-- boxlite-pr-review -->\nold review' }] },
+    { ok: true, json: {} },
+  ])
+  const result = await upsertComment({ repo: 'acme/app', pr: '7', body: `${MARKER}\nnew`, token: 't', fetchImpl: impl })
+
+  assert.deepEqual(result, { action: 'updated', id: 444 })
+  assert.equal(calls[1].method, 'PATCH')
+  assert.ok(JSON.parse(calls[1].body).body.startsWith(MARKER)) // re-marked with the new marker
+})
+
 test('POSTs a new comment when no marked comment exists', async () => {
   const { impl, calls } = fakeFetch([
     { ok: true, json: [{ id: 111, body: 'someone else' }] },

@@ -1,4 +1,4 @@
-# BoxLite PR Reviewer
+# BoxLite GitHub Agent
 
 A GitHub Action that reviews every pull request inside a [BoxLite](https://boxlite.ai)
 microVM using Claude Code. The model runs **read-only** in a throwaway single-kernel
@@ -34,7 +34,7 @@ BoxLite never custodies your credentials.
        runs-on: ubuntu-latest
        permissions: { contents: read, pull-requests: write, checks: write }
        steps:
-         - uses: boxlite-ai/pr-review-agent@v1
+         - uses: boxlite-ai/boxlite-github-agent@v1
            with:
              boxlite-api-key: ${{ secrets.BOXLITE_API_KEY }}
              anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -65,7 +65,7 @@ By default comments post as `github-actions[bot]`. To post as your own `your-app
    `BOXLITE_REVIEWER_APP_PRIVATE_KEY`) and pass them:
 
    ```yaml
-   - uses: boxlite-ai/pr-review-agent@v1
+   - uses: boxlite-ai/boxlite-github-agent@v1
      with:
        boxlite-api-key: ${{ secrets.BOXLITE_API_KEY }}
        anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -91,7 +91,7 @@ after verifying each run's GitHub OIDC claim. Callers then just install `@boxlit
 ```yaml
 permissions: { contents: read, pull-requests: write, checks: write, id-token: write }
 steps:
-  - uses: boxlite-ai/pr-review-agent@v1
+  - uses: boxlite-ai/boxlite-github-agent@v1
     with:
       boxlite-api-key: ${{ secrets.BOXLITE_API_KEY }}
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -121,7 +121,7 @@ runner deletes the box → compute back to zero
 
 The box only reads and reasons; **every GitHub write happens on the runner**. Secrets
 reach the box **per-exec** — never baked into the box image or persisted in box env. The
-in-box entrypoint is pure Node ([`payload/pr-review/review.mjs`](payload/pr-review/review.mjs));
+in-box entrypoint is pure Node ([`broker/src/reviewer.js.txt`](broker/src/reviewer.js.txt));
 the publisher is [`lib/publish.mjs`](lib/publish.mjs).
 
 ## Security model
@@ -138,8 +138,8 @@ the publisher is [`lib/publish.mjs`](lib/publish.mjs).
 
 ## Repository configuration
 
-`payload/pr-review/prompt.md` is the base review policy. For per-repo tuning, add
-`.boxlite-review.yml` at the repo root:
+The `PROMPT` in [`broker/src/reviewer.js.txt`](broker/src/reviewer.js.txt) is the base review
+policy. For per-repo tuning, add `.boxlite-review.yml` at the repo root:
 
 ```yaml
 path_filters:                 # globs; `!` excludes. Findings under excluded paths are dropped.
@@ -178,9 +178,7 @@ node --test test/*.test.mjs
 ```
 
 Covers the findings contract (`lib/findings.mjs`), diff-mapping and rendering
-(`lib/publish.mjs`), config globs (`lib/config.mjs`), the sticky-comment upsert
-(`lib/comment.mjs`), prompt assembly (`payload/pr-review/review.mjs`), and Claude
-credential selection (`lib/credential.mjs`).
+(`lib/publish.mjs`), and the sticky-comment upsert (`lib/comment.mjs`).
 
 ## Inputs
 
