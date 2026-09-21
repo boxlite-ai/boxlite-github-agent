@@ -101,7 +101,7 @@ test('requestsFrom: new mentioning comments only — not ours, not bots, not see
 test('requestsFrom: a freshly opened issue whose body mentions the bot is a request', async () => {
   const gh = fakeGh({ issue: { id: 5, title: 'Q', body: '@botlite how do I build this?', user: user('erin'), state: 'open', html_url: 'i5', created_at: '2026-09-21T11:59:00Z' } })
   const reqs = await requestsFrom(gh, notification({ subject: { type: 'Issue', url: 'https://api.github.com/repos/acme/app/issues/5' }, last_read_at: null }), { login: 'botlite', seen: new Set(), now: NOW })
-  assert.deepEqual(reqs.map((r) => [r.id, r.kind, r.isPR, r.author]), [['issue:5', 'body', false, 'erin']])
+  assert.deepEqual(reqs.map((r) => [r.id, r.kind, r.isPR, r.author]), [['body:acme/app#5', 'body', false, 'erin']])
   assert.equal(gh.calls.some((p) => p.includes('/pulls/')), false) // issues have no review comments
 })
 

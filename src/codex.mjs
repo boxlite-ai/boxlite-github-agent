@@ -20,7 +20,11 @@ export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model }) {
     '--json',
     '-o', outFile,
     '--skip-git-repo-check',
+    // Everything allowed, explicitly: the microVM is the sandbox and holds nothing to protect.
     '--dangerously-bypass-approvals-and-sandbox',
+    '-c', 'approval_policy="never"',
+    '-c', 'sandbox_mode="danger-full-access"',
+    '-c', 'web_search="live"',
     '-c', 'cli_auth_credentials_store="file"',
     '-c', `chatgpt_base_url="${origin}/backend-api/"`,
     '-c', 'model_provider="botlite"',

@@ -65,6 +65,9 @@ controller posts the reply as @boxliteai, then stops the box
   volume, so every box sees the whole shared volume. Each thread's snapshot is therefore sealed
   with AES-256-GCM under a key derived for that thread, and only that thread's box receives it.
   Another box can delete a snapshot, but it can't read it or plant a forged one.
+- **Codex has every permission inside its box.** It runs with no sandbox, no approval prompts,
+  full network, `sudo` and live web search. The microVM is the boundary, and it holds nothing
+  worth stealing.
 - **Session boxes can't write to GitHub.** They get no GitHub token (public repos clone
   anonymously). Only the controller posts, as @boxliteai.
 - **The prompt treats thread text as untrusted.** Anyone can write in a public thread, so
@@ -110,6 +113,19 @@ every thread starts a new session. The script generates one on first run.
 
 Once the controller first refreshes the login (about weekly), the copy in `~/.botlite-codex` stops
 working. That's expected. Log in again before any later redeploy.
+
+### Instant pickup (optional)
+
+Polling GitHub notifications takes about 60 s plus GitHub's own delay (measured: about 60–85 s from
+mention to pickup). In repos that install the **BoxLite Agent** GitHub App, mentions arrive
+instantly instead. The controller serves a signature-checked `POST /webhook` on its public URL.
+
+To set it up, run `node deploy/ctl.mjs webhook`. It prints the webhook URL and secret to enter in
+the App's settings. Subscribe the App to *Issues*, *Issue comment*, *Pull request* and *Pull
+request review comment*, with read-only *Issues* and *Pull requests* permissions. Then install the
+App on the repos that should get instant answers.
+
+The bot still posts as @boxliteai. A mention that arrives both ways is handled once.
 
 ### Controller settings
 

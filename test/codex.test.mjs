@@ -9,6 +9,7 @@ test('codexArgs: a new session runs in the checkout; a resume names the session;
   assert.deepEqual(fresh.slice(0, 5), ['exec', '--json', '-o', '/ctx/last.md', '--skip-git-repo-check'])
   assert.deepEqual(fresh.slice(-3), ['-C', '/ctx/repo', '-'])
   assert.ok(fresh.includes('--dangerously-bypass-approvals-and-sandbox'))
+  for (const c of ['approval_policy="never"', 'sandbox_mode="danger-full-access"', 'web_search="live"']) assert.ok(fresh.includes(c), c)
   // ChatGPT-mode auth, but every backend call goes to the controller, never to chatgpt.com
   assert.ok(fresh.includes('model_providers.botlite={ name = "botlite", base_url = "https://8788-d-abc.proxy.boxlite.ai/backend-api/codex", wire_api = "responses", requires_openai_auth = true }'))
   assert.ok(fresh.includes('chatgpt_base_url="https://8788-d-abc.proxy.boxlite.ai/backend-api/"'))

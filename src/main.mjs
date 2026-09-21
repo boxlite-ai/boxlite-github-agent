@@ -28,6 +28,7 @@ import { runTurn } from './session.mjs'
 import { newSessionPrompt, followUpPrompt } from './codex.mjs'
 import { chatgptLogin, jobTokens, deviceLogin } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
+import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 
 if (typeof WebSocket !== 'function') throw new Error('Node 22+ required (exec attach uses the global WebSocket)')
@@ -79,6 +80,12 @@ if (!cfg.contextSecret) {
   cfg.contextSecret = randomBytes(32).toString('base64')
   await writeFile(path.join(stateDir, 'context-secret'), cfg.contextSecret, { mode: 0o600 })
 }
+// Signs GitHub App webhook deliveries; `node deploy/ctl.mjs webhook` shows it for the App settings.
+cfg.webhookSecret = env.WEBHOOK_SECRET || (await readSecretFile('webhook-secret'))
+if (!cfg.webhookSecret) {
+  cfg.webhookSecret = randomBytes(32).toString('hex')
+  await writeFile(path.join(stateDir, 'webhook-secret'), cfg.webhookSecret, { mode: 0o600 })
+}
 
 const bl = boxlite(cfg.boxliteKey, { base: env.BOXLITE_URL })
 const state = await loadState(cfg.stateFile)
@@ -91,7 +98,16 @@ const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state
 const chatgpt = chatgptLogin({ file: path.join(stateDir, 'chatgpt.json'), initial: cfg.chatgpt, codexAuthFile: path.join(stateDir, 'codex-login', 'auth.json') })
 const jobSecret = createHmac('sha256', cfg.contextSecret).update('botlite:job-tokens').digest()
 const jobs = jobTokens(jobSecret)
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log })
+let onRequest = null // accept(), once the bot is live
+const webhook = webhookHandler({
+  secret: cfg.webhookSecret,
+  onEvent: (event, payload) => {
+    if (!onRequest) return false
+    for (const req of requestsFromWebhook(event, payload, { login: cfg.login, seen: state.seen })) onRequest(req, 'webhook')
+    return persist().then(() => true)
+  },
+})
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log, webhook })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -182,7 +198,7 @@ async function handle(req) {
   }
 }
 
-function accept(req) {
+function accept(req, via = 'poll') {
   state.seen.add(req.id) // at most once: a crash mid-run must not produce a second reply later
   if (!takeQuota(state, req.author, cfg.dailyLimit)) {
     const usage = state.usage[req.author]
@@ -193,7 +209,7 @@ function accept(req) {
     }
     return
   }
-  log(`${req.repo}#${req.number}: request from @${req.author} (${req.url})`)
+  log(`${req.repo}#${req.number}: request from @${req.author} via ${via} (${req.url})`)
   react(gh, req).catch(() => {})
   schedule(`${req.repo}#${req.number}`, () => handle(req))
 }
@@ -229,7 +245,8 @@ process.on('SIGTERM', async () => {
 })
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
-await status(`live as @${cfg.login}: proxy ${proxyUrl}, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
+onRequest = accept
+await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
 for (;;) {
   let interval = 60
   try {
