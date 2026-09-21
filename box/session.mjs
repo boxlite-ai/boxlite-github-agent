@@ -7,6 +7,10 @@
 // subdirectory of the shared volume, sealed with the thread's own key — every box mounts the
 // whole volume, so another thread's box can delete a snapshot but never read or forge one — and
 // a fresh box picking the thread up restores it, so `codex exec resume` carries on.
+//
+// Codex runs logged in to ChatGPT with a stand-in login: auth.json holds this job's token (from
+// the controller, useless once the job ends), never the bot's real ChatGPT login — the controller
+// proxy swaps that in. It is rewritten every turn and never snapshotted.
 import { spawn, execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -48,7 +52,20 @@ function restore() {
 function save() {
   if (!E.SNAPSHOT) return
   mkdirSync(path.dirname(E.SNAPSHOT), { recursive: true })
-  writeFileSync(E.SNAPSHOT, seal(sh('tar', ['czf', '-', '-C', CTX, 'codex'])))
+  writeFileSync(E.SNAPSHOT, seal(sh('tar', ['czf', '-', '-C', CTX, '--exclude=codex/auth.json', 'codex'])))
+}
+
+/** The stand-in ChatGPT login: the job token as access token, unsigned look-alikes for the rest. */
+function writeAuth() {
+  const b64u = (v) => Buffer.from(JSON.stringify(v)).toString('base64url')
+  const claims = { 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro', chatgpt_account_id: 'botlite' } }
+  const idToken = `${b64u({ alg: 'none', typ: 'JWT' })}.${b64u({ email: 'botlite@users.noreply.github.com', exp: Math.floor(Date.now() / 1000) + 86_400, ...claims })}.c2ln`
+  const auth = {
+    OPENAI_API_KEY: null,
+    tokens: { id_token: idToken, access_token: E.BOTLITE_JOB_TOKEN, refresh_token: 'held-by-the-controller', account_id: 'botlite' },
+    last_refresh: new Date().toISOString(), // fresh, so Codex never tries a refresh of its own
+  }
+  writeFileSync(path.join(CTX, 'codex', 'auth.json'), JSON.stringify(auth), { mode: 0o600 })
 }
 
 function ensureCodex(version) {
@@ -83,7 +100,6 @@ function codex(args, prompt) {
         LANG: 'C.UTF-8',
         HOME: path.join(CTX, 'home'),
         CODEX_HOME: path.join(CTX, 'codex'),
-        OPENAI_API_KEY: E.BOXLITE_SECRET_OPENAI || '<BOXLITE_SECRET:openai>', // a placeholder, never the key
         CI: '1',
         NO_COLOR: '1',
       },
@@ -109,6 +125,7 @@ async function main() {
     mkdirSync(CTX, { recursive: true })
     restore() // before creating codex/, whose presence means "this box already has the context"
     for (const d of ['home', 'codex']) mkdirSync(path.join(CTX, d), { recursive: true })
+    writeAuth()
     ensureCodex(E.CODEX_VERSION)
     checkout()
     Object.assign(result, await codex(JSON.parse(E.BOTLITE_ARGS), prompt))

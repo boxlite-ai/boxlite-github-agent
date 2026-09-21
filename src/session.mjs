@@ -26,8 +26,7 @@ export function boxSpec(name, cfg) {
     memory_mib: cfg.memoryMib,
     network: { mode: 'enabled' }, // outbound only: the box is never reachable from outside
     volumes: [{ managed_volume: cfg.volume, guest_path: VOLUME_PATH }],
-    // The box sees only <BOXLITE_SECRET:openai>; BoxLite swaps the key in on the way to OpenAI.
-    secrets: [{ name: 'openai', value: cfg.openaiKey, hosts: ['api.openai.com'] }],
+    // No secrets at all: the model is reached through the controller with a per-job token.
     auto_stop: 900, // safety net; the controller stops the box after every turn
     auto_delete: cfg.boxTtlSec, // a quiet thread's box goes; its context stays on the volume
   }
@@ -53,12 +52,13 @@ export async function ensureBox(bl, name, cfg) {
 }
 
 /**
- * Run one turn. @returns {{ sessionId, message, error }} — `error` set when there's no answer.
+ * Run one turn. `jobToken` is the box's stand-in ChatGPT login for this turn, `proxyUrl` the
+ * controller's public origin. @returns {{ sessionId, message, error, sessionLost }}.
  */
-export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, log = () => {} }) {
+export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, log = () => {} }) {
   const box = await ensureBox(bl, boxName(key), cfg)
   const boxId = box.id || box.name
-  const args = codexArgs({ sessionId, cwd: `${CTX}/repo`, outFile: `${CTX}/last-message.md`, model: cfg.model })
+  const args = codexArgs({ sessionId, cwd: `${CTX}/repo`, outFile: `${CTX}/last-message.md`, proxyUrl, model: cfg.model })
   const { execution_id: execId } = await bl.startExec(boxId, {
     command: 'node',
     args: ['--input-type=module', '-e', RUNNER],
@@ -73,6 +73,7 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, log = 
       BASE_REF: pr?.baseRef ?? '',
       CODEX_VERSION,
       BOTLITE_ARGS: JSON.stringify(args),
+      BOTLITE_JOB_TOKEN: jobToken,
     },
     timeout_seconds: Math.ceil(cfg.jobTimeoutMs / 1000),
   })

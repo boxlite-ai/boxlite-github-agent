@@ -3,10 +3,11 @@ import { test } from 'node:test'
 import { boxName, snapshotPath, contextKey, boxSpec, ensureBox, runTurn } from '../src/session.mjs'
 
 const cfg = {
-  image: 'node', cpus: 2, memoryMib: 4096, volume: 'botlite-context', openaiKey: 'sk-real', boxTtlSec: 259200,
+  image: 'node', cpus: 2, memoryMib: 4096, volume: 'botlite-context', boxTtlSec: 259200,
   contextSecret: 'master', jobTimeoutMs: 60_000, model: undefined,
 }
 const req = { repo: 'acme/app', number: 7, isPR: true }
+const via = { jobToken: 'job.token.sig', proxyUrl: 'https://8788-d-abc.proxy.boxlite.ai' }
 
 test('naming: one stable box, snapshot path and context key per thread', () => {
   assert.equal(boxName('acme/app#7'), boxName('acme/app#7'))
@@ -17,10 +18,10 @@ test('naming: one stable box, snapshot path and context key per thread', () => {
   assert.notEqual(contextKey('master', 'acme/app#7'), contextKey('master', 'acme/app#8'))
 })
 
-test('boxSpec: shared volume, OpenAI key only as an egress secret, private, self-cleaning', () => {
+test('boxSpec: shared volume, no credentials of any kind, private, self-cleaning', () => {
   const spec = boxSpec('botlite-x', cfg)
   assert.deepEqual(spec.volumes, [{ managed_volume: 'botlite-context', guest_path: '/vol' }])
-  assert.deepEqual(spec.secrets, [{ name: 'openai', value: 'sk-real', hosts: ['api.openai.com'] }])
+  assert.equal('secrets' in spec, false) // the model is reached through the controller
   assert.deepEqual(spec.network, { mode: 'enabled' })
   assert.equal(spec.auto_delete, 259200)
   assert.equal('env' in spec, false) // nothing sensitive in plaintext box env
@@ -64,7 +65,7 @@ test('runTurn: runs the in-box runner attached, answers from the last message, s
       return 0
     },
   })
-  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, pr: { headSha: 'abc', baseRef: 'main' }, prompt: 'PROMPT' })
+  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, pr: { headSha: 'abc', baseRef: 'main' }, prompt: 'PROMPT', ...via })
   assert.deepEqual(out, { sessionId: 'th-1', message: 'Final answer.', error: null, sessionLost: false })
 
   const [, boxId, exec] = bl.calls.find((c) => c[0] === 'startExec')
@@ -75,12 +76,14 @@ test('runTurn: runs the in-box runner attached, answers from the last message, s
   assert.equal(exec.env.CONTEXT_KEY, contextKey('master', 'acme/app#7'))
   assert.deepEqual([exec.env.REPO, exec.env.NUMBER, exec.env.IS_PR, exec.env.HEAD_SHA, exec.env.BASE_REF], ['acme/app', '7', '1', 'abc', 'main'])
   assert.equal(JSON.parse(exec.env.BOTLITE_ARGS)[0], 'exec')
+  assert.ok(JSON.parse(exec.env.BOTLITE_ARGS).some((a) => a.includes('https://8788-d-abc.proxy.boxlite.ai/backend-api/codex')))
+  assert.equal(exec.env.BOTLITE_JOB_TOKEN, 'job.token.sig')
   assert.ok(bl.calls.some((c) => c[0] === 'stopBox' && c[1] === 'box-1'))
 })
 
 test('runTurn: stops the box even when the attach fails', async () => {
   const bl = fakeBoxlite({ getBox: async () => ({ id: 'box-1' }), attach: async () => { throw new Error('ws dropped') } })
-  await assert.rejects(runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P' }), /ws dropped/)
+  await assert.rejects(runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P', ...via }), /ws dropped/)
   assert.ok(bl.calls.some((c) => c[0] === 'stopBox'))
 })
 
@@ -93,7 +96,7 @@ test('runTurn: a resume whose session is gone is reported as sessionLost', async
       return 0
     },
   })
-  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P', sessionId: 'th-1' })
+  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P', sessionId: 'th-1', ...via })
   assert.equal(out.sessionLost, true)
   assert.equal(out.message, null)
   assert.match(out.error, /no answer \(exit 1\)/)

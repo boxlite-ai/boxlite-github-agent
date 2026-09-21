@@ -31,6 +31,8 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
     listVolumes: () => call('GET', '/v1/volumes'),
     createVolume: (name) => call('POST', '/v1/volumes', { name }),
     startExec: (id, spec) => call('POST', `/v1/boxes/${id}/exec`, spec),
+    /** A port's public URL (product API: /box/…, which api.boxlite.ai maps to /api/box/…). */
+    previewUrl: (id, port) => call('GET', `/box/${encodeURIComponent(id)}/ports/${port}/preview-url`),
     killExec: (id, execId) => call('DELETE', `/v1/boxes/${id}/executions/${execId}`),
 
     /**

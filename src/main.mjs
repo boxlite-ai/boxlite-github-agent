@@ -1,17 +1,20 @@
 // @botlite — the controller: one long-running BoxLite box. It polls the bot account's GitHub
 // notifications; each request that mentions @botlite becomes one Codex turn in that thread's own
 // box (its context kept in the thread's subdirectory of the shared volume), and the answer is
-// posted back as @botlite. The controller runs no untrusted code; its credentials can still be
-// BoxLite secret placeholders, which the platform swaps in on the way to GitHub / BoxLite.
+// posted back as @botlite. It also holds the bot's ChatGPT login (Codex device auth) and serves
+// it to session boxes only through its proxy, one job token per turn.
 //
 // Env — required: GITHUB_TOKEN (the bot's classic PAT: notifications + public_repo),
-//   BOXLITE_API_KEY, OPENAI_API_KEY (handed to session boxes as a BoxLite secret),
-//   CONTEXT_SECRET (seals per-thread context snapshots). Each of the first three may instead
-//   arrive as its BOXLITE_SECRET_<NAME> placeholder (GITHUB / BOXLITE / OPENAI).
-// Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), VOLUME (botlite-context),
-//   SESSION_IMAGE (node), SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL,
-//   MAX_CONCURRENT (3), DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_TTL_DAYS (3),
-//   STATE_FILE (/var/lib/botlite/state.json).
+//   BOXLITE_API_KEY, CHATGPT_ACCESS_TOKEN + CHATGPT_REFRESH_TOKEN + CHATGPT_ACCOUNT_ID (from
+//   `codex login --device-auth`), CONTEXT_SECRET. Credentials may instead arrive as BoxLite secret
+//   placeholders: BOXLITE_SECRET_GITHUB / _BOXLITE / _CHATGPT_ACCESS / _CHATGPT_REFRESH.
+// Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
+//   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
+//   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, MAX_CONCURRENT (3),
+//   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_TTL_DAYS (3),
+//   STATE_FILE (/var/lib/botlite/state.json; the refreshed ChatGPT login is kept beside it).
+import { createHmac } from 'node:crypto'
+import path from 'node:path'
 import { github } from './github.mjs'
 import { poll, requestsFrom, markRead } from './mentions.mjs'
 import { loadState, saveState, takeQuota } from './state.mjs'
@@ -19,9 +22,14 @@ import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
 import { runTurn } from './session.mjs'
 import { newSessionPrompt, followUpPrompt } from './codex.mjs'
+import { chatgptLogin, jobTokens } from './chatgpt.mjs'
+import { createProxy } from './proxy.mjs'
 import { react, reply } from './reply.mjs'
 
 if (typeof WebSocket !== 'function') throw new Error('Node 22+ required (exec attach uses the global WebSocket)')
+if (Object.keys(process.env).some((k) => k.startsWith('BOXLITE_SECRET_')) && !process.env.NODE_EXTRA_CA_CERTS) {
+  console.warn('BoxLite secrets in use but NODE_EXTRA_CA_CERTS is unset: HTTPS to secret hosts will fail (SELF_SIGNED_CERT_IN_CHAIN)')
+}
 
 const env = process.env
 const need = (...names) => {
@@ -32,8 +40,14 @@ const cfg = {
   login: env.BOT_LOGIN || 'botlite',
   githubToken: need('GITHUB_TOKEN', 'BOXLITE_SECRET_GITHUB'),
   boxliteKey: need('BOXLITE_API_KEY', 'BOXLITE_SECRET_BOXLITE'),
-  openaiKey: need('OPENAI_API_KEY', 'BOXLITE_SECRET_OPENAI'),
   contextSecret: need('CONTEXT_SECRET'),
+  chatgpt: {
+    access_token: need('CHATGPT_ACCESS_TOKEN', 'BOXLITE_SECRET_CHATGPT_ACCESS'),
+    refresh_token: need('CHATGPT_REFRESH_TOKEN', 'BOXLITE_SECRET_CHATGPT_REFRESH'),
+    account_id: need('CHATGPT_ACCOUNT_ID'),
+    last_refresh: env.CHATGPT_LAST_REFRESH, // from the device login's auth.json; unset → refresh early
+  },
+  port: Number(env.PORT || 8788),
   volume: env.VOLUME || 'botlite-context',
   image: env.SESSION_IMAGE || 'node',
   cpus: Number(env.SESSION_CPUS || 2),
@@ -55,6 +69,18 @@ const schedule = scheduler(cfg.maxConcurrent)
 let saving = Promise.resolve()
 const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state)).catch((e) => log(`state not saved: ${e.message}`)))
 
+// The ChatGPT login and the proxy that is the only way to it.
+const chatgpt = chatgptLogin({ file: path.join(path.dirname(cfg.stateFile), 'chatgpt.json'), initial: cfg.chatgpt })
+await chatgpt.load()
+const jobSecret = createHmac('sha256', cfg.contextSecret).update('botlite:job-tokens').digest()
+const jobs = jobTokens(jobSecret)
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log })
+await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
+const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(need('BOXLITE_BOX_ID'), cfg.port)).url).replace(/\/+$/, '')
+setInterval(() => {
+  if (chatgpt.stale()) chatgpt.refresh().then(() => log('ChatGPT login refreshed'), (e) => log(e.message))
+}, 3_600_000).unref()
+
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
   return { headSha: pr.head.sha, baseRef: pr.base.ref }
@@ -66,6 +92,21 @@ async function recentComments(req) {
   return gh.json('GET', `/repos/${req.repo}/issues/${req.number}/comments?per_page=100&page=${page}`)
 }
 
+/**
+ * One turn with its own job token, revoked the moment the turn ends. Its `exp` is deliberately
+ * far off: Codex refreshes a ChatGPT token on its own when it nears expiry — impossible in a box,
+ * and it stalls the turn (seen end-to-end with a short-lived token). What bounds a token's use is
+ * the proxy honouring only live tokens, and the revoke below.
+ */
+async function turn(key, req, pr, prompt, sessionId) {
+  const jobToken = jobs.issue(12 * 3_600_000, key)
+  try {
+    return await runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, log })
+  } finally {
+    jobs.revoke(jobToken)
+  }
+}
+
 async function handle(req) {
   const key = `${req.repo}#${req.number}`
   try {
@@ -75,10 +116,10 @@ async function handle(req) {
     const prompt = known?.sessionId
       ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha) })
       : await fresh()
-    let out = await runTurn({ bl, cfg, key, req, pr, prompt, sessionId: known?.sessionId, log })
+    let out = await turn(key, req, pr, prompt, known?.sessionId)
     if (out.sessionLost) {
       log(`${key}: session ${known.sessionId} is gone; starting over with the full thread`)
-      out = await runTurn({ bl, cfg, key, req, pr, prompt: await fresh(), sessionId: null, log })
+      out = await turn(key, req, pr, await fresh(), null)
     }
     state.threads[key] = { sessionId: out.sessionId ?? null, headSha: pr?.headSha ?? known?.headSha ?? null, lastUsed: new Date().toISOString() }
     persist()
@@ -142,7 +183,7 @@ process.on('SIGTERM', async () => {
 })
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
-log(`@${cfg.login} up: ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
+log(`@${cfg.login} up: proxy ${proxyUrl}, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
 for (;;) {
   let interval = 60
   try {
