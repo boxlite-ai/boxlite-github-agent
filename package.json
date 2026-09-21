@@ -1,0 +1,13 @@
+{
+  "name": "boxlite-github-agent",
+  "private": true,
+  "type": "module",
+  "description": "@botlite — mention it on any public GitHub issue or PR; Codex answers from a BoxLite microVM.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

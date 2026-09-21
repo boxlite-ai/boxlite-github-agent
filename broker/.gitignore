@@ -1,4 +1,0 @@
-node_modules/
-*.pem
-.wrangler/
-.dev.vars
