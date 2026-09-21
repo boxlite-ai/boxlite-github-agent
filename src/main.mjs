@@ -103,10 +103,14 @@ const jobs = jobTokens(jobSecret)
 let onRequest = null // accept(), once the bot is live
 const webhook = webhookHandler({
   secret: cfg.webhookSecret,
-  onEvent: (event, payload) => {
+  onEvent: async (event, payload) => {
     if (!onRequest) return false
-    for (const req of requestsFromWebhook(event, payload, { login: cfg.login, seen: state.seen })) onRequest(req, 'webhook')
-    return persist().then(() => true)
+    for (const req of requestsFromWebhook(event, payload, { login: cfg.login, seen: state.seen })) {
+      const real = await confirmed(req)
+      if (real && !state.seen.has(real.id)) onRequest(real, 'webhook')
+    }
+    await persist()
+    return true
   },
 })
 const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log, webhook })
@@ -144,6 +148,20 @@ const gh = github(githubToken)
 const me = await gh.json('GET', '/user')
 if (env.BOT_LOGIN && env.BOT_LOGIN.toLowerCase() !== me.login.toLowerCase()) log(`BOT_LOGIN=${env.BOT_LOGIN} ignored: the GitHub token is @${me.login}'s`)
 cfg.login = me.login
+
+/**
+ * A webhook mention, re-read from GitHub with the bot's own token: accepted only if that comment /
+ * issue really exists with that author and text. The signature proves who sent the delivery; this
+ * proves what it says — so even a leaked webhook secret can't make the bot post where no one asked.
+ */
+async function confirmed(req) {
+  const path =
+    req.kind === 'comment' ? `/repos/${req.repo}/issues/comments/${req.commentId}`
+      : req.kind === 'review_comment' ? `/repos/${req.repo}/pulls/comments/${req.commentId}`
+        : `/repos/${req.repo}/issues/${req.number}`
+  const live = await gh.json('GET', path).catch(() => null)
+  return live && live.user?.login === req.author && live.body === req.body ? req : null
+}
 
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
