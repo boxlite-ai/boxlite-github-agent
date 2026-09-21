@@ -64,10 +64,14 @@ await mkdir(stateDir, { recursive: true, mode: 0o700 })
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-/** What the controller is doing right now — read by `node deploy/ctl.mjs status`. */
-const status = (line) => {
-  log(line)
-  return writeFile(path.join(stateDir, 'status.txt'), `${new Date().toISOString()} ${line}\n`).catch(() => {})
+/** What the controller is doing or waiting for — read by `node deploy/ctl.mjs status`. */
+const pending = new Map()
+const status = (line, key = 'main') => {
+  if (line) {
+    log(line)
+    pending.set(key, `${new Date().toISOString()} ${line}`)
+  } else pending.delete(key)
+  return writeFile(path.join(stateDir, 'status.txt'), [...pending.values()].join('\n') + '\n').catch(() => {})
 }
 const readSecretFile = async (name) => (await readFile(path.join(stateDir, name), 'utf8').catch(() => '')).trim()
 cfg.contextSecret = env.CONTEXT_SECRET || (await readSecretFile('context-secret'))
@@ -91,20 +95,28 @@ const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
-// Late-bound credentials: wait for whatever the deploy didn't hand over.
-let githubToken = first('GITHUB_TOKEN', 'BOXLITE_SECRET_GITHUB')
-while (!githubToken) {
-  await status("waiting for the bot's GitHub token — run: GITHUB_TOKEN=… node deploy/ctl.mjs github-token")
-  await sleep(30_000)
-  githubToken = await readSecretFile('github-token')
+// Late-bound credentials: wait — for both at once — for whatever the deploy didn't hand over.
+async function waitForGithubToken() {
+  let token = first('GITHUB_TOKEN', 'BOXLITE_SECRET_GITHUB') || (await readSecretFile('github-token'))
+  while (!token) {
+    await status("waiting for the bot's GitHub token — run: GITHUB_TOKEN=… node deploy/ctl.mjs github-token", 'github')
+    await sleep(30_000)
+    token = await readSecretFile('github-token')
+  }
+  await status(null, 'github')
+  return token
 }
-const loginHome = path.join(stateDir, 'codex-login')
-while (!(await chatgpt.load())) {
-  await mkdir(loginHome, { recursive: true, mode: 0o700 })
-  await status('waiting for the ChatGPT device login — starting one')
-  const exit = await deviceLogin({ codexHome: loginHome, onPrompt: ({ url, code }) => status(`waiting for the ChatGPT device login — open ${url} and enter ${code} (expires in 15 min)`) })
-  if (exit !== 0) await sleep(10_000) // expired or failed: a fresh code next round
+async function waitForChatgptLogin() {
+  const home = path.join(stateDir, 'codex-login')
+  while (!(await chatgpt.load())) {
+    await mkdir(home, { recursive: true, mode: 0o700 })
+    await status('waiting for the ChatGPT device login — starting one', 'chatgpt')
+    const exit = await deviceLogin({ codexHome: home, onPrompt: ({ url, code }) => status(`waiting for the ChatGPT device login — open ${url} and enter ${code} (expires in 15 min)`, 'chatgpt') })
+    if (exit !== 0) await sleep(10_000) // expired or failed: a fresh code next round
+  }
+  await status(null, 'chatgpt')
 }
+const [githubToken] = await Promise.all([waitForGithubToken(), waitForChatgptLogin()])
 setInterval(() => {
   if (chatgpt.stale()) chatgpt.refresh().then(() => log('ChatGPT login refreshed'), (e) => log(e.message))
 }, 3_600_000).unref()
