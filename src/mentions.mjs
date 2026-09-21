@@ -57,7 +57,7 @@ export async function requestsFrom(gh, n, { login, seen, now = Date.now() }) {
   if (Date.parse(issue.created_at) >= Date.parse(since)) {
     // Only a freshly opened issue/PR's body counts — a new comment on an old thread must not
     // re-trigger a stale @botlite in its first post.
-    candidates.push({ id: `issue:${issue.id}`, kind: 'body', body: issue.body, user: issue.user, createdAt: issue.created_at, url: issue.html_url })
+    candidates.push({ id: `body:${repo}#${number}`, kind: 'body', body: issue.body, user: issue.user, createdAt: issue.created_at, url: issue.html_url })
   }
   for (const c of await gh.json('GET', `/repos/${repo}/issues/${number}/comments?since=${since}&per_page=100`)) {
     candidates.push({ id: `ic:${c.id}`, kind: 'comment', commentId: c.id, body: c.body, user: c.user, createdAt: c.created_at, url: c.html_url })

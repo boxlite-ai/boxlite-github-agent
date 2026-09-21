@@ -4,6 +4,7 @@
 //   node deploy/ctl.mjs status        box state + what the controller is doing or waiting for —
 //                                     e.g. the ChatGPT device-login link and one-time code
 //   node deploy/ctl.mjs logs [lines]  the end of the controller log (default 80)
+//   node deploy/ctl.mjs webhook       the GitHub App webhook URL + secret (instant pickup where installed)
 //   node deploy/ctl.mjs restart       restart the controller process; it pulls its branch first,
 //                                     and keeps its login and state (the box isn't recreated)
 //   GITHUB_TOKEN=… node deploy/ctl.mjs github-token
@@ -41,6 +42,12 @@ if (cmd === 'status') {
 } else if (cmd === 'restart') {
   const r = await sh("pkill -f 'botlite/src/mai[n].mjs' && echo restarting || echo 'controller process not found'")
   console.log(r.out)
+} else if (cmd === 'webhook') {
+  const { url } = await bl.previewUrl(id, 8788)
+  const secret = (await sh('cat ~/.botlite/webhook-secret 2>/dev/null')).out
+  console.log(`GitHub App → Webhook URL:    ${url.replace(/\/+$/, '')}/webhook`)
+  console.log(`GitHub App → Webhook secret: ${secret || '(not generated yet — restart the controller)'}`)
+  console.log('Events: Issues, Issue comment, Pull request, Pull request review comment')
 } else if (cmd === 'github-token') {
   if (!process.env.GITHUB_TOKEN) {
     console.error("set GITHUB_TOKEN (the bot account's classic PAT)")
@@ -49,6 +56,6 @@ if (cmd === 'status') {
   const r = await sh('umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/github-token && echo stored', `${process.env.GITHUB_TOKEN}\n`)
   console.log(r.code === 0 ? 'handed to the controller — it starts polling within 30 s' : `failed: ${r.out}`)
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | restart | github-token')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token')
   process.exit(2)
 }
