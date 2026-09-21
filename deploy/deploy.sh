@@ -19,6 +19,7 @@
 # header through a pipe, jq reads secrets from its environment). Every credential passed here
 # becomes a BoxLite secret: the controller sees only a placeholder, swapped for the real value
 # on the way to its own host.
+# The bot's handle is whoever GITHUB_TOKEN belongs to (BOT_LOGIN only names who you expect).
 # Optional: BOT_LOGIN (botlite) VOLUME (botlite-context) CODEX_MODEL BOTLITE_REF (main)
 #           BOXLITE_URL (https://api.boxlite.ai)
 set -euo pipefail
@@ -122,12 +123,12 @@ done'
 
 # Public inbound: session boxes reach the controller's model proxy over its preview URL (every
 # request needs a live job token; everything else there is a 404).
-jq -n --arg name "$NAME" --arg bot "$BOT" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${CODEX_MODEL:-}" \
+jq -n --arg name "$NAME" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${CODEX_MODEL:-}" \
   --arg account "$CHATGPT_ACCOUNT_ID" --arg refreshed "$CHATGPT_LAST_REFRESH" --arg port "$PORT" --arg boot "$BOOT" '{
     name: $name, image: "node", cpus: 1, memory_mib: 2048,
     network: {outbound: {mode: "enabled"}, inbound: {mode: "enabled"}},
     auto_stop: 0,
-    env: ({BOT_LOGIN: $bot, VOLUME: $volume, BOTLITE_REF: $ref, PORT: $port}
+    env: ({VOLUME: $volume, BOTLITE_REF: $ref, PORT: $port}
           + (if $ENV.CONTEXT_SECRET then {CONTEXT_SECRET: $ENV.CONTEXT_SECRET} else {} end)
           + (if $account == "" then {} else {CHATGPT_ACCOUNT_ID: $account} end)
           + (if $refreshed == "" then {} else {CHATGPT_LAST_REFRESH: $refreshed} end)
