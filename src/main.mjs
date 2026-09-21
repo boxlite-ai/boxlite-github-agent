@@ -38,7 +38,7 @@ if (Object.keys(process.env).some((k) => k.startsWith('BOXLITE_SECRET_')) && !pr
 const env = process.env
 const first = (...names) => names.map((n) => env[n]).find(Boolean)
 const cfg = {
-  login: env.BOT_LOGIN || 'botlite', // replaced by the GitHub token's own login once it's known
+  login: env.BOT_LOGIN || 'boxliteai', // replaced by the GitHub token's own login once it's known
   boxliteKey: first('BOXLITE_API_KEY', 'BOXLITE_SECRET_BOXLITE'),
   chatgpt: {
     access_token: first('CHATGPT_ACCESS_TOKEN', 'BOXLITE_SECRET_CHATGPT_ACCESS'),

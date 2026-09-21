@@ -18,7 +18,7 @@ const DROP_RES = new Set(['content-encoding', 'content-length', 'transfer-encodi
 export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.com', model, maxRequestsPerJob = 400, fetchImpl = fetch, log = () => {} }) {
   return http.createServer(async (req, res) => {
     if (req.url === '/healthz') return send(res, 200, 'ok')
-    if (!ALLOWED.some(([m, re]) => m === req.method && re.test(req.url))) return send(res, 404, 'not available through @botlite')
+    if (!ALLOWED.some(([m, re]) => m === req.method && re.test(req.url))) return send(res, 404, 'not available through this proxy')
     const claims = verifyJobToken(secret, /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1])
     const job = claims && jobs.live.get(claims.jti)
     if (!job) return send(res, 403, 'unknown or expired job token')
@@ -58,6 +58,7 @@ export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.c
       if (up.body) for await (const chunk of up.body) res.write(chunk)
       res.end()
     } catch (e) {
+      if (abort.signal.aborted) return // the box hung up (e.g. Codex's short models fetch) — not an error
       log(`proxy (${claims.thread}): ${e.message}`)
       if (!res.headersSent) send(res, 502, 'upstream error')
       else res.destroy()

@@ -20,12 +20,12 @@
 # becomes a BoxLite secret: the controller sees only a placeholder, swapped for the real value
 # on the way to its own host.
 # The bot's handle is whoever GITHUB_TOKEN belongs to (BOT_LOGIN only names who you expect).
-# Optional: BOT_LOGIN (botlite) VOLUME (botlite-context) CODEX_MODEL BOTLITE_REF (main)
+# Optional: BOT_LOGIN (boxliteai) VOLUME (botlite-context) CODEX_MODEL BOTLITE_REF (main)
 #           BOXLITE_URL (https://api.boxlite.ai)
 set -euo pipefail
 
 API="${BOXLITE_URL:-https://api.boxlite.ai}"
-BOT="${BOT_LOGIN:-botlite}"
+BOT="${BOT_LOGIN:-boxliteai}"
 VOLUME="${VOLUME:-botlite-context}"
 REF="${BOTLITE_REF:-main}"
 AUTH_FILE="${CODEX_AUTH_FILE:-$HOME/.botlite-codex/auth.json}"
