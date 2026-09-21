@@ -30,7 +30,7 @@ function formPage(installationId) {
 input{width:100%;padding:.6rem;margin:.3rem 0 1rem;font:inherit;box-sizing:border-box}
 button{padding:.6rem 1.2rem;font:inherit;background:#6f42c1;color:#fff;border:0;border-radius:6px;cursor:pointer}
 label{font-weight:600}.h{color:#57606a;font-size:.9em}</style>
-<h2>📦 Connect BoxLite PR Reviewer</h2>
+<h2>📦 Connect BoxLite GitHub Agent</h2>
 <p class=h>Stored encrypted, used to boot your review microVM + run Claude on your own account.
 Enter them once; every PR in your installed repos is reviewed automatically after that.</p>
 <form method=post>

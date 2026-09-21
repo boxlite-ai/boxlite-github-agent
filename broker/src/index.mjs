@@ -1,4 +1,4 @@
-// BoxLite PR reviewer — webhook runner. A GitHub App webhook triggers a review; the broker
+// BoxLite GitHub agent — webhook runner. A GitHub App webhook triggers a review; the broker
 // boots a BoxLite box that runs Claude, and the box calls back to /publish. No per-repo
 // workflow file, no repo secrets — the App + this Worker are the whole system.
 //

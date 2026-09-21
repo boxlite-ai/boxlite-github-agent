@@ -60,7 +60,7 @@ async function main() {
     }
 
     const git = (a) => execFileSync('git', a, { stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8' })
-    const repoDir = path.join(mkdtempSync(path.join(tmpdir(), 'pr-review-')), 'repo')
+    const repoDir = path.join(mkdtempSync(path.join(tmpdir(), 'github-agent-')), 'repo')
     // contents:read clone token — used only for the clone, then scrubbed before Claude runs.
     git(['clone', '-q', '--depth', '200', `https://x-access-token:${E.GH_CLONE_TOKEN}@github.com/${E.REPO}.git`, repoDir])
     git(['-C', repoDir, 'fetch', '-q', '--depth', '200', 'origin', `+refs/pull/${E.PR}/head`, `+refs/heads/${E.BASE_REF}:refs/remotes/origin/${E.BASE_REF}`])
