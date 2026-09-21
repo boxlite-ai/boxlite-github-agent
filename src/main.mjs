@@ -4,16 +4,20 @@
 // posted back as @botlite. It also holds the bot's ChatGPT login (Codex device auth) and serves
 // it to session boxes only through its proxy, one job token per turn.
 //
-// Env — required: GITHUB_TOKEN (the bot's classic PAT: notifications + public_repo),
-//   BOXLITE_API_KEY, CHATGPT_ACCESS_TOKEN + CHATGPT_REFRESH_TOKEN + CHATGPT_ACCOUNT_ID (from
-//   `codex login --device-auth`), CONTEXT_SECRET. Credentials may instead arrive as BoxLite secret
-//   placeholders: BOXLITE_SECRET_GITHUB / _BOXLITE / _CHATGPT_ACCESS / _CHATGPT_REFRESH.
+// Credentials can arrive after the box is up — the controller waits for what's missing and says
+// so in <state dir>/status.txt (`node deploy/ctl.mjs status`):
+//   GitHub  GITHUB_TOKEN / BOXLITE_SECRET_GITHUB, or <state dir>/github-token (ctl github-token)
+//   ChatGPT CHATGPT_ACCESS_TOKEN + CHATGPT_REFRESH_TOKEN + CHATGPT_ACCOUNT_ID (or their
+//           BOXLITE_SECRET_CHATGPT_* placeholders), else a device login run in this box
+//   BoxLite BOXLITE_API_KEY / BOXLITE_SECRET_BOXLITE (required)
+//   CONTEXT_SECRET — else generated once into <state dir>/context-secret
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
 //   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, MAX_CONCURRENT (3),
 //   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_TTL_DAYS (3),
-//   STATE_FILE (/var/lib/botlite/state.json; the refreshed ChatGPT login is kept beside it).
-import { createHmac } from 'node:crypto'
+//   STATE_FILE (/var/lib/botlite/state.json; its directory is the state dir).
+import { createHmac, randomBytes } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { github } from './github.mjs'
 import { poll, requestsFrom, markRead } from './mentions.mjs'
@@ -22,7 +26,7 @@ import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
 import { runTurn } from './session.mjs'
 import { newSessionPrompt, followUpPrompt } from './codex.mjs'
-import { chatgptLogin, jobTokens } from './chatgpt.mjs'
+import { chatgptLogin, jobTokens, deviceLogin } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
 import { react, reply } from './reply.mjs'
 
@@ -32,19 +36,14 @@ if (Object.keys(process.env).some((k) => k.startsWith('BOXLITE_SECRET_')) && !pr
 }
 
 const env = process.env
-const need = (...names) => {
-  for (const n of names) if (env[n]) return env[n]
-  throw new Error(`missing env ${names.join(' or ')}`)
-}
+const first = (...names) => names.map((n) => env[n]).find(Boolean)
 const cfg = {
   login: env.BOT_LOGIN || 'botlite',
-  githubToken: need('GITHUB_TOKEN', 'BOXLITE_SECRET_GITHUB'),
-  boxliteKey: need('BOXLITE_API_KEY', 'BOXLITE_SECRET_BOXLITE'),
-  contextSecret: need('CONTEXT_SECRET'),
+  boxliteKey: first('BOXLITE_API_KEY', 'BOXLITE_SECRET_BOXLITE'),
   chatgpt: {
-    access_token: need('CHATGPT_ACCESS_TOKEN', 'BOXLITE_SECRET_CHATGPT_ACCESS'),
-    refresh_token: need('CHATGPT_REFRESH_TOKEN', 'BOXLITE_SECRET_CHATGPT_REFRESH'),
-    account_id: need('CHATGPT_ACCOUNT_ID'),
+    access_token: first('CHATGPT_ACCESS_TOKEN', 'BOXLITE_SECRET_CHATGPT_ACCESS'),
+    refresh_token: first('CHATGPT_REFRESH_TOKEN', 'BOXLITE_SECRET_CHATGPT_REFRESH'),
+    account_id: env.CHATGPT_ACCOUNT_ID,
     last_refresh: env.CHATGPT_LAST_REFRESH, // from the device login's auth.json; unset → refresh early
   },
   port: Number(env.PORT || 8788),
@@ -59,27 +58,57 @@ const cfg = {
   boxTtlSec: Number(env.BOX_TTL_DAYS || 3) * 86_400,
   stateFile: env.STATE_FILE || '/var/lib/botlite/state.json',
 }
+if (!cfg.boxliteKey) throw new Error('missing env BOXLITE_API_KEY or BOXLITE_SECRET_BOXLITE')
+const stateDir = path.dirname(cfg.stateFile)
+await mkdir(stateDir, { recursive: true, mode: 0o700 })
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const gh = github(cfg.githubToken)
+/** What the controller is doing right now — read by `node deploy/ctl.mjs status`. */
+const status = (line) => {
+  log(line)
+  return writeFile(path.join(stateDir, 'status.txt'), `${new Date().toISOString()} ${line}\n`).catch(() => {})
+}
+const readSecretFile = async (name) => (await readFile(path.join(stateDir, name), 'utf8').catch(() => '')).trim()
+cfg.contextSecret = env.CONTEXT_SECRET || (await readSecretFile('context-secret'))
+if (!cfg.contextSecret) {
+  cfg.contextSecret = randomBytes(32).toString('base64')
+  await writeFile(path.join(stateDir, 'context-secret'), cfg.contextSecret, { mode: 0o600 })
+}
+
 const bl = boxlite(cfg.boxliteKey, { base: env.BOXLITE_URL })
 const state = await loadState(cfg.stateFile)
 const schedule = scheduler(cfg.maxConcurrent)
 let saving = Promise.resolve()
 const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state)).catch((e) => log(`state not saved: ${e.message}`)))
 
-// The ChatGPT login and the proxy that is the only way to it.
-const chatgpt = chatgptLogin({ file: path.join(path.dirname(cfg.stateFile), 'chatgpt.json'), initial: cfg.chatgpt })
-await chatgpt.load()
+// The proxy comes up first — it's what the deploy health check looks for — and only ever serves
+// live job tokens, so it's safe before the ChatGPT login exists.
+const chatgpt = chatgptLogin({ file: path.join(stateDir, 'chatgpt.json'), initial: cfg.chatgpt, codexAuthFile: path.join(stateDir, 'codex-login', 'auth.json') })
 const jobSecret = createHmac('sha256', cfg.contextSecret).update('botlite:job-tokens').digest()
 const jobs = jobTokens(jobSecret)
 const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
-const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(need('BOXLITE_BOX_ID'), cfg.port)).url).replace(/\/+$/, '')
+const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
+
+// Late-bound credentials: wait for whatever the deploy didn't hand over.
+let githubToken = first('GITHUB_TOKEN', 'BOXLITE_SECRET_GITHUB')
+while (!githubToken) {
+  await status("waiting for the bot's GitHub token — run: GITHUB_TOKEN=… node deploy/ctl.mjs github-token")
+  await sleep(30_000)
+  githubToken = await readSecretFile('github-token')
+}
+const loginHome = path.join(stateDir, 'codex-login')
+while (!(await chatgpt.load())) {
+  await mkdir(loginHome, { recursive: true, mode: 0o700 })
+  await status('waiting for the ChatGPT device login — starting one')
+  const exit = await deviceLogin({ codexHome: loginHome, onPrompt: ({ url, code }) => status(`waiting for the ChatGPT device login — open ${url} and enter ${code} (expires in 15 min)`) })
+  if (exit !== 0) await sleep(10_000) // expired or failed: a fresh code next round
+}
 setInterval(() => {
   if (chatgpt.stale()) chatgpt.refresh().then(() => log('ChatGPT login refreshed'), (e) => log(e.message))
 }, 3_600_000).unref()
+const gh = github(githubToken)
 
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
@@ -183,7 +212,7 @@ process.on('SIGTERM', async () => {
 })
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
-log(`@${cfg.login} up: proxy ${proxyUrl}, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
+await status(`live as @${cfg.login}: proxy ${proxyUrl}, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
 for (;;) {
   let interval = 60
   try {
