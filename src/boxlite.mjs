@@ -28,6 +28,7 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
     getBox: (idOrName) => call('GET', `/v1/boxes/${encodeURIComponent(idOrName)}`, undefined, { allow404: true }),
     createBox: (spec) => call('POST', '/v1/boxes', spec),
     stopBox: (id) => call('POST', `/v1/boxes/${id}/stop`),
+    startBox: (id) => call('POST', `/v1/boxes/${id}/start`),
     listVolumes: () => call('GET', '/v1/volumes'),
     createVolume: (name) => call('POST', '/v1/volumes', { name }),
     startExec: (id, spec) => call('POST', `/v1/boxes/${id}/exec`, spec),
@@ -38,42 +39,59 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
     /**
      * Attach to an execution: send `stdin` then EOF, stream output until the exit message.
      * Wire format: binary [0x01|stdout] / [0x02|stderr] frames, text {"type":"exit","exit_code":N}.
+     * A handshake that fails (the box still resuming — seen live) is retried: the exec runs on
+     * unattached for minutes and replays its output on attach, so nothing is lost.
      * @returns {Promise<number>} the exit code
      */
-    attach(id, execId, { stdin, onStdout, onStderr, timeoutMs }) {
-      return new Promise((resolve, reject) => {
-        const ws = new WebSocketImpl(`${root.replace(/^http/, 'ws')}/v1/boxes/${id}/executions/${execId}/attach`, { headers })
-        ws.binaryType = 'arraybuffer'
-        let exitCode = null
-        let failure = null
-        const timer = setTimeout(() => {
-          failure = new Error(`attach timed out after ${Math.round(timeoutMs / 1000)}s`)
-          ws.close()
-        }, timeoutMs)
-        ws.onopen = () => {
-          if (stdin) ws.send(Buffer.from(stdin))
-          ws.send(JSON.stringify({ type: 'stdin_eof' }))
+    async attach(id, execId, opts) {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await attachOnce(id, execId, opts)
+        } catch (e) {
+          if (!e.beforeOpen || attempt >= (opts.handshakeRetries ?? 5)) throw e
+          await new Promise((r) => setTimeout(r, (opts.retryDelayMs ?? 2000) * attempt))
         }
-        ws.onmessage = ({ data }) => {
-          if (typeof data === 'string') {
-            const msg = JSON.parse(data)
-            if (msg.type === 'exit') exitCode = msg.exit_code
-            else if (msg.type === 'error') failure = new Error(`exec error: ${msg.message}`)
-            return
-          }
-          const bytes = Buffer.from(data)
-          if (bytes[0] === 0x01) onStdout?.(bytes.subarray(1))
-          else if (bytes[0] === 0x02) onStderr?.(bytes.subarray(1))
-        }
-        ws.onerror = (e) => {
-          failure ??= new Error(`attach failed: ${e.message || 'websocket error'}`)
-        }
-        ws.onclose = () => {
-          clearTimeout(timer)
-          if (exitCode !== null && !failure) resolve(exitCode)
-          else reject(failure ?? new Error('attach closed before the exec exited'))
-        }
-      })
+      }
     },
+  }
+
+  function attachOnce(id, execId, { stdin, onStdout, onStderr, timeoutMs }) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocketImpl(`${root.replace(/^http/, 'ws')}/v1/boxes/${id}/executions/${execId}/attach`, { headers })
+      ws.binaryType = 'arraybuffer'
+      let exitCode = null
+      let failure = null
+      let opened = false
+      const timer = setTimeout(() => {
+        failure = new Error(`attach timed out after ${Math.round(timeoutMs / 1000)}s`)
+        ws.close()
+      }, timeoutMs)
+      ws.onopen = () => {
+        opened = true
+        if (stdin) ws.send(Buffer.from(stdin))
+        ws.send(JSON.stringify({ type: 'stdin_eof' }))
+      }
+      ws.onmessage = ({ data }) => {
+        if (typeof data === 'string') {
+          const msg = JSON.parse(data)
+          if (msg.type === 'exit') exitCode = msg.exit_code
+          else if (msg.type === 'error') failure = new Error(`exec error: ${msg.message}`)
+          return
+        }
+        const bytes = Buffer.from(data)
+        if (bytes[0] === 0x01) onStdout?.(bytes.subarray(1))
+        else if (bytes[0] === 0x02) onStderr?.(bytes.subarray(1))
+      }
+      ws.onerror = (e) => {
+        failure ??= new Error(`attach failed: ${e.message || 'websocket error'}`)
+      }
+      ws.onclose = () => {
+        clearTimeout(timer)
+        if (exitCode !== null && !failure) return resolve(exitCode)
+        const err = failure ?? new Error('attach closed before the exec exited')
+        err.beforeOpen = !opened
+        reject(err)
+      }
+    })
   }
 }
