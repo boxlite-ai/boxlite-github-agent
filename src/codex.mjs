@@ -7,18 +7,24 @@ export const CODEX_VERSION = '0.150.0' // pinned: the flags and JSONL events bel
  * argv for one Codex turn: a new session in `cwd`, or `resume <sessionId>`. The prompt comes on
  * stdin (`-`), so long thread context never hits the argv length limit. The session box is the
  * sandbox, hence --dangerously-bypass-approvals-and-sandbox (Codex's flag for exactly that).
- * Auth is the `OPENAI_API_KEY` env var, which in the box holds only a BoxLite secret placeholder:
- * the platform swaps the real key in on the way to api.openai.com, so no code in the box sees it.
+ *
+ * Auth is ChatGPT mode, but everything goes to the controller (`proxyUrl`): the `botlite`
+ * provider sends the turn with the box's auth.json token (a job token, never the real login) to
+ * <proxy>/backend-api/codex/responses, and chatgpt_base_url sends Codex's optional backend calls
+ * there too, where they get a 404 instead of reaching chatgpt.com. Verified against 0.150.0.
  */
-export function codexArgs({ sessionId, cwd, outFile, baseUrl = 'https://api.openai.com/v1', model }) {
-  if (!/^https?:\/\/[^\s"'\\]+$/.test(baseUrl)) throw new Error(`bad base url: ${baseUrl}`)
+export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model }) {
+  if (!/^https?:\/\/[^\s"'\\]+$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
+  const origin = proxyUrl.replace(/\/+$/, '')
   const opts = [
     '--json',
     '-o', outFile,
     '--skip-git-repo-check',
     '--dangerously-bypass-approvals-and-sandbox',
+    '-c', 'cli_auth_credentials_store="file"',
+    '-c', `chatgpt_base_url="${origin}/backend-api/"`,
     '-c', 'model_provider="botlite"',
-    '-c', `model_providers.botlite={ name = "botlite", base_url = "${baseUrl}", env_key = "OPENAI_API_KEY", wire_api = "responses" }`,
+    '-c', `model_providers.botlite={ name = "botlite", base_url = "${origin}/backend-api/codex", wire_api = "responses", requires_openai_auth = true }`,
     ...(model ? ['-m', model] : []),
   ]
   return sessionId ? ['exec', 'resume', ...opts, sessionId, '-'] : ['exec', ...opts, '-C', cwd, '-']

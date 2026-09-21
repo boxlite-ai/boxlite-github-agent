@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { codexArgs, applyEvent, newRun, newSessionPrompt, followUpPrompt } from '../src/codex.mjs'
 
-const base = { cwd: '/ctx/repo', outFile: '/ctx/last.md' }
+const base = { cwd: '/ctx/repo', outFile: '/ctx/last.md', proxyUrl: 'https://8788-d-abc.proxy.boxlite.ai/' }
 
 test('codexArgs: a new session runs in the checkout; a resume names the session; prompt on stdin', () => {
   const fresh = codexArgs(base)
   assert.deepEqual(fresh.slice(0, 5), ['exec', '--json', '-o', '/ctx/last.md', '--skip-git-repo-check'])
   assert.deepEqual(fresh.slice(-3), ['-C', '/ctx/repo', '-'])
   assert.ok(fresh.includes('--dangerously-bypass-approvals-and-sandbox'))
-  assert.ok(fresh.includes('model_providers.botlite={ name = "botlite", base_url = "https://api.openai.com/v1", env_key = "OPENAI_API_KEY", wire_api = "responses" }'))
+  // ChatGPT-mode auth, but every backend call goes to the controller, never to chatgpt.com
+  assert.ok(fresh.includes('model_providers.botlite={ name = "botlite", base_url = "https://8788-d-abc.proxy.boxlite.ai/backend-api/codex", wire_api = "responses", requires_openai_auth = true }'))
+  assert.ok(fresh.includes('chatgpt_base_url="https://8788-d-abc.proxy.boxlite.ai/backend-api/"'))
+  assert.ok(fresh.includes('cli_auth_credentials_store="file"'))
 
   const resumed = codexArgs({ ...base, sessionId: '01a0c45b-edb0', model: 'gpt-5.6-sol' })
   assert.deepEqual(resumed.slice(0, 2), ['exec', 'resume'])
@@ -17,8 +20,9 @@ test('codexArgs: a new session runs in the checkout; a resume names the session;
   assert.equal(resumed.includes('-C'), false) // `exec resume` has no --cd; the box runs it in the checkout
 })
 
-test('codexArgs: refuses a base url that could break out of the TOML string', () => {
-  assert.throws(() => codexArgs({ ...base, baseUrl: 'http://x/v1" , env_key = "PATH' }), /bad base url/)
+test('codexArgs: needs a proxy url, and refuses one that could break out of the TOML string', () => {
+  assert.throws(() => codexArgs({ ...base, proxyUrl: 'http://x" , base_url = "http://evil' }), /bad proxy url/)
+  assert.throws(() => codexArgs({ ...base, proxyUrl: undefined }), /bad proxy url/)
 })
 
 const run = (lines) => lines.map((l) => JSON.stringify(l)).reduce(applyEvent, newRun())
