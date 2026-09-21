@@ -38,7 +38,7 @@ if (Object.keys(process.env).some((k) => k.startsWith('BOXLITE_SECRET_')) && !pr
 const env = process.env
 const first = (...names) => names.map((n) => env[n]).find(Boolean)
 const cfg = {
-  login: env.BOT_LOGIN || 'botlite',
+  login: env.BOT_LOGIN || 'botlite', // replaced by the GitHub token's own login once it's known
   boxliteKey: first('BOXLITE_API_KEY', 'BOXLITE_SECRET_BOXLITE'),
   chatgpt: {
     access_token: first('CHATGPT_ACCESS_TOKEN', 'BOXLITE_SECRET_CHATGPT_ACCESS'),
@@ -121,6 +121,11 @@ setInterval(() => {
   if (chatgpt.stale()) chatgpt.refresh().then(() => log('ChatGPT login refreshed'), (e) => log(e.message))
 }, 3_600_000).unref()
 const gh = github(githubToken)
+// Who we are is whoever the token belongs to — mentions of that account are the only ones that
+// reach us. BOT_LOGIN can't override it (a mismatch would drop every mention unanswered).
+const me = await gh.json('GET', '/user')
+if (env.BOT_LOGIN && env.BOT_LOGIN.toLowerCase() !== me.login.toLowerCase()) log(`BOT_LOGIN=${env.BOT_LOGIN} ignored: the GitHub token is @${me.login}'s`)
+cfg.login = me.login
 
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
