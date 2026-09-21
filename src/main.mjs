@@ -90,6 +90,8 @@ if (!cfg.webhookSecret) {
 const bl = boxlite(cfg.boxliteKey, { base: env.BOXLITE_URL })
 const state = await loadState(cfg.stateFile)
 const schedule = scheduler(cfg.maxConcurrent)
+let inflight = 0 // turns accepted and not yet answered
+let draining = false // SIGTERM: take no new work, let running turns finish
 let saving = Promise.resolve()
 const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state)).catch((e) => log(`state not saved: ${e.message}`)))
 
@@ -199,6 +201,7 @@ async function handle(req) {
 }
 
 function accept(req, via = 'poll') {
+  if (draining) return // not marked seen: the next controller picks it up
   state.seen.add(req.id) // at most once: a crash mid-run must not produce a second reply later
   if (!takeQuota(state, req.author, cfg.dailyLimit)) {
     const usage = state.usage[req.author]
@@ -211,10 +214,12 @@ function accept(req, via = 'poll') {
   }
   log(`${req.repo}#${req.number}: request from @${req.author} via ${via} (${req.url})`)
   react(gh, req).catch(() => {})
-  schedule(`${req.repo}#${req.number}`, () => handle(req))
+  inflight++
+  schedule(`${req.repo}#${req.number}`, () => handle(req)).finally(() => inflight--)
 }
 
 async function tick() {
+  if (draining) return 5 // don't read (and mark read) notifications we won't handle
   const { notifications, lastModified, interval } = await poll(gh, state.lastModified)
   let clean = true
   for (const n of notifications) {
@@ -239,7 +244,13 @@ async function ensureVolume() {
   log(`created volume ${cfg.volume}`)
 }
 
+// A restart (`ctl restart`, a redeploy) must not cut off answers: accepted requests are marked
+// seen, so a turn killed mid-way would never be retried. Take no new work, finish what's running.
 process.on('SIGTERM', async () => {
+  if (draining) return
+  draining = true
+  log(`SIGTERM: finishing ${inflight} running turn(s) before exiting`)
+  for (let waited = 0; inflight > 0 && waited < cfg.jobTimeoutMs + 120_000; waited += 1000) await sleep(1000)
   await persist()
   process.exit(0)
 })
