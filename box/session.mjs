@@ -19,6 +19,8 @@ import path from 'node:path'
 process.on('SIGHUP', () => {}) // a dropped attach gets a reconnect grace; don't die in it
 
 const E = process.env
+// An exec given its own env gets no PATH (seen live): without this, tar/git/npm/codex are ENOENT.
+E.PATH ||= '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const CTX = E.CTX || '/ctx'
 const REPO_DIR = path.join(CTX, 'repo')
 const KEY = Buffer.from(E.CONTEXT_KEY || '', 'base64')
@@ -122,7 +124,14 @@ async function main() {
   const prompt = await readStdin()
   const result = { type: 'botlite.result' }
   try {
-    mkdirSync(CTX, { recursive: true })
+    try {
+      mkdirSync(CTX, { recursive: true })
+    } catch (e) {
+      if (e.code !== 'EACCES') throw e
+      // The box's user isn't root (the node image runs as `boxlite`, with passwordless sudo).
+      sh('sudo', ['mkdir', '-p', CTX], { cwd: '/' })
+      sh('sudo', ['chown', `${process.getuid()}:${process.getgid()}`, CTX], { cwd: '/' })
+    }
     restore() // before creating codex/, whose presence means "this box already has the context"
     for (const d of ['home', 'codex']) mkdirSync(path.join(CTX, d), { recursive: true })
     writeAuth()

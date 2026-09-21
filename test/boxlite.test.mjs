@@ -78,3 +78,42 @@ test('REST: base url, bearer auth, JSON body; 404 lookup → null; errors carry 
   assert.match(err.message, /POST \/v1\/boxes → 408: still starting/)
   assert.deepEqual(JSON.parse(calls[2].init.body), { name: 'x' })
 })
+
+test('attach: a failed handshake (box still resuming) is retried; a failure after open is not', async () => {
+  let made = 0
+  class FlakyWS {
+    constructor() {
+      this.n = ++made
+      queueMicrotask(() => {
+        if (this.n === 1) {
+          this.onerror?.({ message: 'Received network error or non-101 status code' })
+          this.onclose?.()
+        } else this.onopen?.()
+      })
+    }
+    send(data) {
+      if (typeof data === 'string' && JSON.parse(data).type === 'stdin_eof')
+        queueMicrotask(() => {
+          this.onmessage({ data: JSON.stringify({ type: 'exit', exit_code: 0 }) })
+          this.onclose()
+        })
+    }
+    close() {}
+  }
+  assert.equal(await boxlite('k', { WebSocketImpl: FlakyWS }).attach('b', 'e', { timeoutMs: 5000, retryDelayMs: 1 }), 0)
+  assert.equal(made, 2)
+
+  let opened = 0
+  class DropsAfterOpen {
+    constructor() {
+      opened++
+      queueMicrotask(() => this.onopen?.())
+    }
+    send() {
+      queueMicrotask(() => this.onclose?.())
+    }
+    close() {}
+  }
+  await assert.rejects(boxlite('k', { WebSocketImpl: DropsAfterOpen }).attach('b', 'e', { timeoutMs: 5000, retryDelayMs: 1 }), /closed before the exec exited/)
+  assert.equal(opened, 1) // output may already have been consumed: never replayed twice
+})

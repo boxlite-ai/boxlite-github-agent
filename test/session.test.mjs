@@ -36,6 +36,7 @@ function fakeBoxlite(over = {}) {
     getBox: rec('getBox', null),
     createBox: rec('createBox', { id: 'box-1', name: 'n' }),
     stopBox: rec('stopBox', null),
+    startBox: rec('startBox', null),
     startExec: rec('startExec', { execution_id: 'ex-1' }),
     attach: rec('attach', 0),
     ...over,
@@ -100,4 +101,12 @@ test('runTurn: a resume whose session is gone is reported as sessionLost', async
   assert.equal(out.sessionLost, true)
   assert.equal(out.message, null)
   assert.match(out.error, /no answer \(exit 1\)/)
+})
+
+test('runTurn: starts a stopped box before the exec; leaves a running one alone', async () => {
+  for (const [status, expectStart] of [['stopped', true], ['running', false]]) {
+    const bl = fakeBoxlite({ getBox: async () => ({ id: 'box-1', status }) , attach: async (id, e, { onStdout }) => (onStdout(Buffer.from(lines({ type: 'botlite.result', code: 0, lastMessage: 'ok' }))), 0) })
+    await runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P', ...via })
+    assert.equal(bl.calls.some((c) => c[0] === 'startBox'), expectStart, status)
+  }
 })

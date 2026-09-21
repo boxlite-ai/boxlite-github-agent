@@ -5,6 +5,7 @@
 // claims but never verifies them (checked against 0.150.0) — and the proxy swaps in the real one.
 // The controller also keeps the login alive: it refreshes the access token the way Codex does
 // (same endpoint and OAuth client), and persists the rotated tokens on its own disk.
+import { spawn } from 'node:child_process'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
@@ -56,12 +57,61 @@ export function jobTokens(secret) {
   }
 }
 
+/** The link and one-time code in `codex login --device-auth` output (colour codes stripped). */
+export function parseDevicePrompt(text) {
+  const plain = String(text).replace(/\x1b\[[0-9;]*m/g, '')
+  const url = /https:\/\/auth\.openai\.com\/\S*device\S*/.exec(plain)?.[0]
+  const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/.exec(plain)?.[0]
+  return url && code ? { url, code } : null
+}
+
 /**
- * The login itself. `initial` seeds it on a fresh controller (values may be BoxLite secret
- * placeholders — the platform swaps them in on the way to chatgpt.com / auth.openai.com); once
- * refreshed, the rotated tokens live in `file` (0600) and win over `initial` on restarts.
+ * Codex's device login, run in this box so the login is created where it's used. Resolves with
+ * the exit code once it ends — approved, expired (15 min) or failed; `onPrompt({ url, code })`
+ * fires once the link and one-time code are shown.
  */
-export function chatgptLogin({ file, initial, fetchImpl = fetch }) {
+export function deviceLogin({ codexHome, onPrompt, bin = 'codex', spawnImpl = spawn }) {
+  return new Promise((resolve) => {
+    const child = spawnImpl(bin, ['login', '--device-auth', '-c', 'cli_auth_credentials_store="file"'], {
+      env: { PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome, NO_COLOR: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let text = ''
+    let shown = false
+    const onData = (d) => {
+      text += d
+      const prompt = !shown && parseDevicePrompt(text)
+      if (prompt) {
+        shown = true
+        onPrompt(prompt)
+      }
+    }
+    child.stdout.on('data', onData)
+    child.stderr.on('data', onData)
+    child.on('error', () => resolve(127))
+    child.on('close', (code) => resolve(code))
+  })
+}
+
+const complete = (t) => Boolean(t?.access_token && t.refresh_token && t.account_id)
+const readJson = async (file) => {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'))
+  } catch (e) {
+    if (e.code === 'ENOENT') return null
+    throw e
+  }
+}
+/** A Codex auth.json (what `codex login --device-auth` writes) as our token shape. */
+const fromCodexAuth = (a) => a?.tokens && { access_token: a.tokens.access_token, refresh_token: a.tokens.refresh_token, account_id: a.tokens.account_id, last_refresh: a.last_refresh }
+
+/**
+ * The login itself, from whichever source is newest (by last_refresh): `file` — our own copy,
+ * rotated on every refresh (0600) —, `codexAuthFile` — a device login done in this box —, or
+ * `initial` from the deploy (values may be BoxLite secret placeholders, swapped in by the platform
+ * on the way to chatgpt.com / auth.openai.com). `load()` is false while there's no login yet.
+ */
+export function chatgptLogin({ file, initial = {}, codexAuthFile, fetchImpl = fetch }) {
   let tokens = null
   let inflight = null
 
@@ -74,13 +124,14 @@ export function chatgptLogin({ file, initial, fetchImpl = fetch }) {
 
   return {
     async load() {
-      try {
-        tokens = JSON.parse(await readFile(file, 'utf8'))
-      } catch (e) {
-        if (e.code !== 'ENOENT') throw e
-        tokens = { ...initial, last_refresh: initial.last_refresh || new Date(0).toISOString() }
-      }
-      if (!tokens.access_token || !tokens.refresh_token || !tokens.account_id) throw new Error('ChatGPT login incomplete: need access token, refresh token and account id')
+      const own = await readJson(file)
+      if (own && !complete(own)) throw new Error('ChatGPT login incomplete: need access token, refresh token and account id')
+      const found = [own, fromCodexAuth(codexAuthFile && (await readJson(codexAuthFile))), initial]
+        .filter(complete)
+        .map((t) => ({ ...t, last_refresh: t.last_refresh || new Date(0).toISOString() }))
+        .sort((a, b) => Date.parse(b.last_refresh) - Date.parse(a.last_refresh))
+      tokens = found[0] ?? null
+      return Boolean(tokens)
     },
     get: () => tokens,
     stale: (now = Date.now()) => now - Date.parse(tokens.last_refresh) > REFRESH_AFTER_MS,
