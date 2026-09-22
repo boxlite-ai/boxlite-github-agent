@@ -1,8 +1,11 @@
 // @botlite — the controller: one long-running BoxLite box, started by the launcher (main.mjs). It
-// polls the bot account's GitHub notifications; each request that mentions @botlite becomes one
-// Codex turn in that thread's own box (its context kept in the thread's subdirectory of the shared
-// volume), and the answer is posted back as @botlite. It also holds the bot's ChatGPT login (Codex
-// device auth) and serves it to session boxes only through its proxy, one job token per turn.
+// polls the bot account's GitHub notifications, and — once the Slack app's tokens are in — holds a
+// Socket Mode connection to Slack (slack-channel.mjs). Each request becomes one Codex turn in that
+// thread's own box (its context kept in the thread's subdirectory of a shared volume), and the
+// answer is posted back where it was asked. GitHub's threads and Slack's never share a box, a
+// volume or a context secret (session.mjs). It also holds the bot's ChatGPT login (Codex device
+// auth) and serves it to session boxes only through its proxy, one job token per turn — as it
+// does the team's Linear, Notion and Google Workspace (tools.mjs), for the turns that may use them.
 //
 // Credentials can arrive after the box is up — the controller waits for what's missing and says
 // so in <state dir>/status.txt (`node deploy/ctl.mjs status`):
@@ -10,28 +13,36 @@
 //   ChatGPT CHATGPT_ACCESS_TOKEN + CHATGPT_REFRESH_TOKEN + CHATGPT_ACCOUNT_ID (or their
 //           BOXLITE_SECRET_CHATGPT_* placeholders), else a device login run in this box
 //   BoxLite BOXLITE_API_KEY / BOXLITE_SECRET_BOXLITE (required)
-//   CONTEXT_SECRET — else generated once into <state dir>/context-secret
+//   CONTEXT_SECRET — else generated once into <state dir>/context-secret; Slack threads' own is
+//           SLACK_CONTEXT_SECRET or <state dir>/slack-context-secret (likewise)
 //   PRs     the push App (githubapp.mjs): GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY, or
 //           <state dir>/github-app.json (ctl github-app) — without it, PR writing is off;
 //           BOT_ADMINS, or <state dir>/bot-admins (ctl admins): GitHub logins (comma-separated)
 //           who may ask for PRs anywhere and run the admin commands (access.mjs)
+//   Slack   optional: SLACK_BOT_TOKEN (xoxb-…) + SLACK_APP_TOKEN (xapp-…, Socket Mode), or their
+//           BOXLITE_SECRET_SLACK_BOT / _SLACK_APP placeholders, or <state dir>/slack-bot-token +
+//           slack-app-token (ctl slack-tokens) — no restart needed
+//   Tools   optional, each on once its login is in place: Linear LINEAR_API_KEY /
+//           BOXLITE_SECRET_LINEAR or <state dir>/linear-api-key (ctl linear-key); Notion and Google
+//           <state dir>/notion-oauth.json, google-oauth.json (ctl notion-login, google-login)
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
-//   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
-//   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, CODEX_EFFORT (both until an admin's
-//   /model), MAX_CONCURRENT (3),
-//   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_DELETE_SEC (15),
+//   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SLACK_VOLUME
+//   (botlite-slack-context), SESSION_IMAGE (node), SESSION_CPUS (2), SESSION_MEMORY_MIB (4096),
+//   CODEX_MODEL, CODEX_EFFORT (both until an admin's /model), MAX_CONCURRENT (3),
+//   DAILY_LIMIT_PER_USER (20), SLACK_DAILY_LIMIT (0: no limit), JOB_TIMEOUT_MIN (20),
+//   BOX_TTL_MIN (15), MAX_FILE_MB (5), MAX_FILES_MB (8),
 //   STATE_FILE (/var/lib/botlite/state.json; its directory is the state dir).
 import { execFileSync } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { github } from './github.mjs'
 import { poll, requestsFrom, markRead, standing } from './mentions.mjs'
-import { loadState, saveState, takeQuota, quotaLeft } from './state.mjs'
+import { loadState, saveState, takeQuota, quotaLeft, importSlackState } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
-import { runTurn } from './session.mjs'
+import { runTurn, mixedSides, boxName } from './session.mjs'
 import { newSessionPrompt, followUpPrompt, CODEX_VERSION } from './codex.mjs'
 import { chatgptLogin, jobTokens, deviceLogin, codexModels } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
@@ -42,6 +53,11 @@ import { planWrite, publishWrite } from './publish.mjs'
 import { selfBuild, deployPlan, markGood, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
+import { toolBroker, enabledServices } from './tools.mjs'
+import { keyLogin, oauthLogin } from './oauth.mjs'
+import { TOOLS } from './policy.mjs'
+import { tally } from './slack-reply.mjs'
+import { slackChannel } from './slack-channel.mjs'
 
 if (typeof WebSocket !== 'function') throw new Error('Node 22+ required (exec attach uses the global WebSocket)')
 if (Object.keys(process.env).some((k) => k.startsWith('BOXLITE_SECRET_')) && !process.env.NODE_EXTRA_CA_CERTS) {
@@ -69,7 +85,12 @@ const cfg = {
   maxConcurrent: Number(env.MAX_CONCURRENT || 3),
   dailyLimit: Number(env.DAILY_LIMIT_PER_USER || 20),
   jobTimeoutMs: Number(env.JOB_TIMEOUT_MIN || 20) * 60_000,
-  boxDeleteSec: Number(env.BOX_DELETE_SEC || 15),
+  boxDeleteSec: Number(env.BOX_TTL_MIN || 15) * 60, // a thread's box is deleted after this long without a turn
+  // Slack (slack-channel.mjs): its threads' own volume and context secret, what a message's files may weigh.
+  slackVolume: env.SLACK_VOLUME || 'botlite-slack-context',
+  slackDailyLimit: Number(env.SLACK_DAILY_LIMIT || 0), // requests per Slack user per UTC day; 0: no limit
+  maxFileBytes: Number(env.MAX_FILE_MB || 5) * 1024 * 1024,
+  maxFilesBytes: Number(env.MAX_FILES_MB || 8) * 1024 * 1024,
   stateFile: env.STATE_FILE || '/var/lib/botlite/state.json',
 }
 if (!cfg.boxliteKey) throw new Error('missing env BOXLITE_API_KEY or BOXLITE_SECRET_BOXLITE')
@@ -102,6 +123,16 @@ if (!cfg.webhookSecret) {
   cfg.webhookSecret = randomBytes(32).toString('hex')
   await writeFile(path.join(stateDir, 'webhook-secret'), cfg.webhookSecret, { mode: 0o600 })
 }
+// Slack threads' contexts are sealed under a secret of their own (session.mjs sideOf): the Slack
+// agent's, handed over, so its threads carry on here. It's read when Slack starts, so one handed
+// over with the tokens (ctl slack-tokens writes it first) is the one the first Slack turn uses.
+async function slackContextSecret() {
+  const known = env.SLACK_CONTEXT_SECRET || (await readSecretFile('slack-context-secret'))
+  if (known) return known
+  const made = randomBytes(32).toString('base64')
+  await writeFile(path.join(stateDir, 'slack-context-secret'), made, { mode: 0o600 })
+  return made
+}
 
 const bl = boxlite(cfg.boxliteKey, { base: env.BOXLITE_URL })
 const state = await loadState(cfg.stateFile)
@@ -130,16 +161,34 @@ const webhook = webhookHandler({
   },
 })
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
+// The bot's own logins to the team's tools, each optional: a service is on while its login is in place.
+const logins = {
+  linear: keyLogin(async () => first('LINEAR_API_KEY', 'BOXLITE_SECRET_LINEAR') || (await readSecretFile('linear-api-key'))),
+  notion: oauthLogin({ name: 'Notion', file: path.join(stateDir, 'notion-oauth.json') }),
+  google: oauthLogin({ name: 'Google', file: path.join(stateDir, 'google-oauth.json') }),
+}
+const tools = toolBroker({ secret: jobSecret, jobs, logins, policy: TOOLS, log })
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
 const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
-// /healthz is healthy while polling works: a controller that's up but stuck is caught too (the
-// health workflow checks it). Before the first poll it counts from the start.
+/** The config one turn runs on: the deploy's, with the model and effort of the moment. */
+const turnCfg = () => {
+  const { model, effort } = running()
+  return { ...cfg, model: model ?? undefined, effort: effort ?? undefined }
+}
+// /healthz is healthy while polling works and, once Slack is set up, while the bot is connected to
+// it (or was in the last 10 minutes: a reconnect is no outage) — a controller that's up but stuck
+// or deaf is caught too (the health workflow checks it). Before the first poll it counts from the start.
 let lastPoll = Date.now()
+let slackBot = null // the Slack channel, once its tokens are in
+let lastSlack = Date.now()
 const health = () => {
   const quiet = Date.now() - lastPoll
-  return quiet < 10 * 60_000 ? { ok: true } : { ok: false, why: `no successful poll for ${Math.floor(quiet / 60_000)} minutes` }
+  if (quiet >= 10 * 60_000) return { ok: false, why: `no successful poll for ${Math.floor(quiet / 60_000)} minutes` }
+  if (slackBot?.live !== false) lastSlack = Date.now() // not set up yet, or connected
+  const deaf = Date.now() - lastSlack
+  return deaf < 10 * 60_000 ? { ok: true } : { ok: false, why: `not connected to Slack for ${Math.floor(deaf / 60_000)} minutes` }
 }
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, health })
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, tools, health })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -248,15 +297,17 @@ async function recentComments(req) {
  * far off: Codex refreshes a ChatGPT token on its own when it nears expiry — impossible in a box,
  * and it stalls the turn (seen end-to-end with a short-lived token). What bounds a token's use is
  * the proxy honouring only live tokens, and the revoke below. A write turn's token may also push
- * one staging branch (gitpush.mjs) — the revoke ends that too, before anything is published.
+ * one staging branch (gitpush.mjs) — the revoke ends that too, before anything is published. The
+ * same token opens the team's tools for a turn that has them; `job` is its record (who asked, and
+ * — from tools.mjs — what it changed).
  */
-async function turn(key, req, pr, prompt, sessionId, plan) {
-  const push = plan ? { ref: `refs/heads/${plan.staging}`, open: () => plan.open() } : null
-  const jobToken = jobs.issue(12 * 3_600_000, key, { push })
+async function turn(key, req, pr, prompt, sessionId, plan, services, job) {
+  job.push = plan ? { ref: `refs/heads/${plan.staging}`, open: () => plan.open() } : null
+  const jobToken = jobs.issue(12 * 3_600_000, key, job)
   try {
-    const { model, effort } = running()
-    log(`${key}: turn on ${model ?? "Codex's default model"}${effort ? `, ${effort} effort` : ''}`)
-    const out = await runTurn({ bl, cfg: { ...cfg, model: model ?? undefined, effort: effort ?? undefined }, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
+    const run = turnCfg()
+    log(`${key}: turn in ${boxName(key)} on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}${services.length ? `, with ${services.map((s) => s.name).join(', ')}` : ''}`)
+    const out = await runTurn({ bl, cfg: run, key, req, pr, prompt, tools: services, sessionId, jobToken, proxyUrl, write: plan, log })
     if (out.tooling?.error) log(`${key}: agent-tooling not installed/updated: ${out.tooling.error}`)
     else if (out.tooling) log(`${key}: agent-tooling ${out.tooling.version}`)
     return out
@@ -286,14 +337,18 @@ async function handle(req) {
     const known = state.threads[key]
     const { write, plan: planned } = await writeTurn(req, pr, key)
     plan = planned
-    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write })
+    // The team's tools on GitHub only for the bot's admins: anyone can ask here, and the answer is
+    // public (the prompt says so, too).
+    const services = admins.has(req.userId) ? (await Promise.all(Object.values(logins).map((l) => l.load())), enabledServices(logins, TOOLS)) : []
+    const job = { who: `@${req.author}`, writes: [], tools: services.map((s) => s.name) } // what its token opens
+    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write, services })
     const prompt = known?.sessionId
-      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write })
+      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write, services })
       : await fresh()
-    let out = await turn(key, req, pr, prompt, known?.sessionId, plan)
+    let out = await turn(key, req, pr, prompt, known?.sessionId, plan, services, job)
     if (out.sessionLost) {
       log(`${key}: session ${known.sessionId} is gone; starting over with the full thread`)
-      out = await turn(key, req, pr, await fresh(), null, plan)
+      out = await turn(key, req, pr, await fresh(), null, plan, services, job)
     }
     state.threads[key] = { sessionId: out.sessionId ?? null, headSha: pr?.headSha ?? known?.headSha ?? null, lastUsed: new Date().toISOString() }
     let note = null
@@ -303,11 +358,14 @@ async function handle(req) {
       if (plan.fork) state.forks[req.repo.toLowerCase()] = plan.fork
       if (note) log(`${key}: ${note}`)
     }
+    // What the turn changed in the team's tools, as the controller recorded it: Codex's own account
+    // of it is in its answer, this one it can't leave out.
+    if (job.writes.length) note = [note, `✏️ Changed as the bot: ${tally(job.writes)}`].filter(Boolean).join('\n\n')
     persist()
     await req.ack // the 👀 always lands before the answer
     if (out.message) {
       await reply(gh, req, note ? `${out.message}\n\n${note}` : out.message)
-      log(`${key}: answered @${req.author}`)
+      log(`${key}: answered @${req.author}${job.writes.length ? `, changed: ${tally(job.writes)}` : ''}`)
     } else {
       log(`${key}: no answer — ${out.error}`)
       await reply(gh, req, `@${req.author} sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${note ? `\n\n${note}` : ''}`)
@@ -396,12 +454,15 @@ async function tick() {
   return interval
 }
 
-async function ensureVolume() {
+/** A volume, by name or id — made if it isn't there yet. */
+async function ensureVolume(name) {
   const list = await bl.listVolumes()
   const volumes = Array.isArray(list) ? list : (list.volumes ?? list.items ?? list.data ?? [])
-  if (volumes.some((v) => v.name === cfg.volume || v.id === cfg.volume)) return
-  await bl.createVolume(cfg.volume)
-  log(`created volume ${cfg.volume}`)
+  const found = volumes.find((v) => v.name === name || v.id === name)
+  if (found) return found
+  const made = await bl.createVolume(name)
+  log(`created volume ${name}`)
+  return made
 }
 
 // A restart (`ctl restart`, a redeploy) must not cut off answers: accepted requests are marked
@@ -411,17 +472,93 @@ let trialFailed = null
 process.on('SIGTERM', async () => {
   if (draining) return
   draining = true
+  await slackBot?.settle() // Slack requests already being accepted may still start their turns
   log(`SIGTERM: finishing ${inflight} running turn(s) before exiting`)
   for (let waited = 0; inflight > 0 && waited < cfg.jobTimeoutMs + 120_000; waited += 1000) await sleep(1000)
+  // Slack's socket stays up until now: what still arrives is acked and kept for the next controller.
+  slackBot?.stop()
+  await slackBot?.settle()
   await persist()
   if (build.commit && trialFailed) failTrial(stateDir, build.commit, trialFailed)
   else if (build.commit) cleanExit(stateDir, build.commit) // a restart, not a failure: the launcher counts crashes only
   process.exit(trialFailed ? 1 : 0)
 })
 
-await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
+await ensureVolume(cfg.volume).catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
 onRequest = accept
 await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}, codex ${CODEX_VERSION}, build ${build.commit?.slice(0, 7) ?? '?'}`)
+
+const HOW_TO_LINK = {
+  linear: 'LINEAR_API_KEY=… node deploy/ctl.mjs linear-key',
+  notion: 'node deploy/ctl.mjs notion-login',
+  google: 'GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs google-login',
+}
+/** Picks up logins handed over since (ctl), keeps idle ones alive, and says in the status which are on. */
+async function checkTools() {
+  await Promise.all(Object.values(logins).map((l) => l.load()))
+  for (const [name, l] of Object.entries(logins)) {
+    if (l.stale?.()) await l.refresh().then(() => log(`${name} login refreshed`), (e) => log(e.message))
+  }
+  await status(`tools: ${Object.entries(logins).map(([name, l]) => `${name} ${l.describe() ?? `off (${HOW_TO_LINK[name]})`}`).join(' · ')}`, 'tools')
+}
+await checkTools().catch((e) => log(`tools: ${e.message}`))
+setInterval(() => checkTools().catch((e) => log(`tools: ${e.message}`)), 3_600_000).unref()
+
+/**
+ * Slack is optional: its channel starts once the app's tokens are in — at start, or whenever `ctl
+ * slack-tokens` hands them over. The Slack agent's memory, handed over at the switch
+ * (slack-state.json), is taken in first, once.
+ */
+const track = (work) => {
+  inflight++
+  return work.finally(() => inflight--)
+}
+// One start at a time: a slow one overlapping the next try would open a second Socket Mode
+// connection for the same app, and Slack would split the events between them.
+let slackStarting = null
+const startSlack = () => (slackStarting ??= connectSlack().finally(() => (slackStarting = null)))
+async function connectSlack() {
+  if (slackBot || draining) return true
+  const tokens = {
+    bot: first('SLACK_BOT_TOKEN', 'BOXLITE_SECRET_SLACK_BOT') || (await readSecretFile('slack-bot-token')),
+    app: first('SLACK_APP_TOKEN', 'BOXLITE_SECRET_SLACK_APP') || (await readSecretFile('slack-app-token')),
+  }
+  if (!tokens.bot || !tokens.app) return false
+  cfg.slackContextSecret ??= await slackContextSecret()
+  // Slack's threads never share a volume or a context secret with GitHub's (session.mjs sideOf): a
+  // config that would — one volume under two names, too — keeps Slack off rather than mixing them.
+  const volumes = await Promise.all([ensureVolume(cfg.volume), ensureVolume(cfg.slackVolume)]).catch((e) => (log(`slack volume check: ${e.message} — create "${cfg.slackVolume}" in the dashboard if this key lacks volume permissions`), []))
+  const mixed = mixedSides(cfg) ?? (volumes[0]?.id && volumes[0].id === volumes[1]?.id ? `GitHub and Slack threads can't share a volume (${cfg.volume} and ${cfg.slackVolume} are one)` : null)
+  if (mixed) {
+    await status(`slack: off — ${mixed}`, 'slack')
+    return true // nothing to wait for: it takes another config and a restart
+  }
+  const handed = path.join(stateDir, 'slack-state.json')
+  const raw = await readFile(handed, 'utf8').catch(() => null)
+  if (raw) {
+    importSlackState(state, JSON.parse(raw))
+    await persist()
+    await rename(handed, path.join(stateDir, 'slack-state.imported.json'))
+    log(`slack: took in the Slack agent's memory: ${Object.keys(state.slack.threads).length} threads, ${state.slack.deferred.length} requests kept for us`)
+  }
+  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, logins, policy: TOOLS, turnCfg, status, log })
+  if (draining) return true // shutting down meanwhile: the next controller connects
+  slackBot = channel
+  lastSlack = Date.now() // the trial and /healthz count Slack from its start
+  channel.start()
+  // "connected as", never "live as @": that's the deploy's sign the controller is up (ctl.mjs), and
+  // the deploy's public log mustn't carry the workspace's name.
+  await status(`slack: connected as @${channel.bot.name} in ${channel.bot.teamName}, ${cfg.slackDailyLimit ? `${cfg.slackDailyLimit}/person/day` : 'no daily limit'}, volume ${cfg.slackVolume}`, 'slack')
+  return true
+}
+const slackOff = "slack: off until the Slack app's tokens are handed over — SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node deploy/ctl.mjs slack-tokens"
+if (!(await startSlack().catch((e) => (log(`slack: ${e.message}`), false)))) {
+  await status(slackOff, 'slack')
+  const waiting = setInterval(async () => {
+    if (await startSlack().catch((e) => (log(`slack: ${e.message}`), false))) clearInterval(waiting)
+  }, 60_000)
+  waiting.unref()
+}
 
 // Report how the last /deploy went, in the thread that asked; a deploy stays pending through the
 // new build's trial, and the build is good (the launcher won't roll back past it) once it's over.
@@ -437,11 +574,12 @@ if (deploying) {
   state.deploy = pendingAfter({ pending: deploying, running: build.commit, rollback })
   await persist()
 }
-// Running isn't enough to pass: a build that isn't polling by the end of its trial fails it.
+// Running isn't enough to pass: a build that isn't polling — or, once Slack is set up, connected to
+// it — by the end of its trial fails it.
 setTimeout(async () => {
   const { ok, why } = health()
   if (!ok) {
-    trialFailed = `wasn't polling at the end of its ${TRIAL_MS / 60_000}-minute trial (${why})`
+    trialFailed = `wasn't healthy at the end of its ${TRIAL_MS / 60_000}-minute trial (${why})`
     log(`build ${build.commit?.slice(0, 7)} ${trialFailed}: stopping, for the launcher to roll it back`)
     return process.kill(process.pid, 'SIGTERM')
   }

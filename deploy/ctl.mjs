@@ -19,12 +19,21 @@
 //                                     controller's checkout; a pull never replaces it
 //   node deploy/ctl.mjs rollback <sha> run an earlier build of the tracked branch until the next
 //                                     restart or /deploy — works when the controller itself doesn't
+//   SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… [SLACK_CONTEXT_SECRET=…] node deploy/ctl.mjs slack-tokens
+//                                     hand over the Slack app's tokens (and, taking threads over
+//                                     from another controller, its context secret) the same way
+//   LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs linear-key     the bot's Linear key, likewise
+//   node deploy/ctl.mjs notion-login | google-login  link the bot's Notion / Google account in a
+//                                     browser here (deploy/login.mjs); the tokens go straight over
 //
 // restart, admins and rollback take --wait: wait (up to 25 min, since running turns finish first)
 // for the next start to go live, and fail if it isn't the build asked for: with --includes <sha>,
 // one that includes that commit; for rollback, that commit.
 import { readFileSync } from 'node:fs'
 import { boxlite } from '../src/boxlite.mjs'
+import { googleScopes } from '../src/tools.mjs'
+import { TOOLS } from '../src/policy.mjs'
+import { notionLogin, googleLogin } from './login.mjs'
 
 const NAME = 'botlite-controller'
 if (!process.env.BOXLITE_API_KEY) {
@@ -72,13 +81,17 @@ function report(r, ok) {
   if (r.code !== 0) process.exit(1)
 }
 
+// The log lines the boot loop and the controller write about starting are told by how they begin —
+// a timestamp, then the words — never by words anywhere in a line, which a line quoting a turn's
+// output could hold too.
+const TS = '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z '
 // How many times the boot loop has started the controller, read just before a restart: --wait
 // looks for the start after those.
-const countStarts = async () => Number((await read("grep -c 'starting controller (' ~/.botlite/controller.log 2>/dev/null || true")).out) || 0
+const countStarts = async () => Number((await read(`grep -cE '${TS}starting controller \\(' ~/.botlite/controller.log 2>/dev/null || true`)).out) || 0
 // The first of those starts to go live settles it: one that fails before going live (the launcher
 // counts those) is waited out, and a rollback, the gate's or the launcher's, fails at once.
 async function waitLive({ starts, want, exact }) {
-  const latest = `awk 'index($0, "starting controller (") { n++; s = substr($0, index($0, "starting controller (") + 21); sub(/\\).*/, "", s); up = 0 } index($0, "live as @") { up = 1 } END { print n + 0, (s == "" ? "-" : s), (up ? "live" : "starting") }' ~/.botlite/controller.log`
+  const latest = `awk '$2 == "starting" && $3 == "controller" && $4 ~ /^\\(/ { n++; s = substr($4, 2); sub(/\\).*/, "", s); up = 0 } $2 == "live" && $3 == "as" && $4 ~ /^@/ { up = 1 } END { print n + 0, (s == "" ? "-" : s), (up ? "live" : "starting") }' ~/.botlite/controller.log`
   let seen = ''
   for (let i = 0; i < 100; i++) {
     if (i) await sleep(15_000)
@@ -103,10 +116,14 @@ async function waitLive({ starts, want, exact }) {
   return story()
 }
 // Only the boot story, URLs taken out: this runs in a public Actions log, and the log also holds
-// things like a device-login code, which anyone could approve with their own ChatGPT account.
+// things like a device-login code, which anyone could approve with their own ChatGPT account — and
+// the team's Slack conversations. So: the boot loop's, the gate's, the launcher's and the
+// controller's own lines about starting, and of a crash where it was and what it was, with
+// whatever its message quotes taken out.
 async function story() {
-  const lines = "starting controller \\(|controller exited \\(|gate: |launcher: |failed to go live|rolled back|git pull failed|live as @|^[A-Za-z]*Error( \\[[A-Z_]+\\])?: |^file://"
-  console.log((await read(`tail -n 400 ~/.botlite/controller.log | grep -E '${lines}' | sed -E 's#https?://[^ ,]+#<url>#g' | tail -n 30`)).out)
+  const lines = `${TS}(starting controller \\(|controller exited \\(|gate: |launcher: |build [0-9a-f]+ .*: rolled back to |rolled back from |live as @)|^git pull failed|^[A-Za-z]*Error( \\[[A-Z_]+\\])?: |^file://`
+  const unquote = `/^[A-Za-z]*Error/ s#[\\"'].*[\\"']#\\"...\\"#`
+  console.log((await read(`tail -n 400 ~/.botlite/controller.log | grep -E '${lines}' | sed -E -e 's#https?://[^ ,]+#<url>#g' -e "${unquote}" | tail -n 30`)).out)
   process.exit(1)
 }
 
@@ -178,6 +195,39 @@ if (cmd === 'status') {
   const script = readFileSync(new URL('./post-merge.sh', import.meta.url), 'utf8')
   const r = await sh('cat > ~/botlite/.git/hooks/post-merge && chmod +x ~/botlite/.git/hooks/post-merge && echo installed', script)
   report(r, 'pull gate installed in the controller checkout')
+} else if (cmd === 'slack-tokens') {
+  const { SLACK_BOT_TOKEN: botToken = '', SLACK_APP_TOKEN: appToken = '', SLACK_CONTEXT_SECRET: contextSecret = '' } = process.env
+  if (!/^xoxb-\S+$/.test(botToken) || !/^xapp-\S+$/.test(appToken)) {
+    console.error("set SLACK_BOT_TOKEN (the app's Bot User OAuth Token, xoxb-…) and SLACK_APP_TOKEN (an app-level token with connections:write, xapp-…); SLACK_CONTEXT_SECRET too, to carry Slack threads over from another controller")
+    process.exit(2)
+  }
+  // `read` and `printf` are bash builtins: the tokens go from stdin to the files without an argv.
+  // The context secret goes first: the controller reads it as Slack starts, once the tokens are in.
+  const script = 'umask 077 && mkdir -p ~/.botlite && IFS= read -r bot && IFS= read -r app && IFS= read -r ctx; { [ -z "$ctx" ] || printf %s "$ctx" > ~/.botlite/slack-context-secret; } && printf %s "$bot" > ~/.botlite/slack-bot-token && printf %s "$app" > ~/.botlite/slack-app-token && echo stored'
+  report(await sh(script, `${botToken}\n${appToken}\n${contextSecret}\n`), `handed to the controller — it connects to Slack within a minute${contextSecret ? '; if Slack was on already, the context secret applies from its next start (restart)' : ''}`)
+} else if (cmd === 'linear-key') {
+  const key = process.env.LINEAR_API_KEY ?? ''
+  if (!/^lin_api_\S+$/.test(key)) {
+    console.error("set LINEAR_API_KEY (the bot's Linear API key, lin_api_…)")
+    process.exit(2)
+  }
+  report(await sh('umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/linear-api-key && echo stored', `${key}\n`), 'handed to the controller — Linear is on from the next request')
+} else if (cmd === 'notion-login' || cmd === 'google-login') {
+  let login
+  if (cmd === 'notion-login') login = await notionLogin()
+  else {
+    const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env
+    if (!clientId || !clientSecret) {
+      console.error('set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (an OAuth client of type Desktop app — see the README)')
+      process.exit(2)
+    }
+    login = await googleLogin({ clientId, clientSecret, scopes: googleScopes(TOOLS) })
+  }
+  // Written aside, then moved: the controller may be reading this file. (It keeps the logins it
+  // refreshes in files of its own, so it never writes this one: oauth.mjs.)
+  const file = `~/.botlite/${cmd === 'notion-login' ? 'notion' : 'google'}-oauth.json`
+  const r = await sh(`umask 077 && mkdir -p ~/.botlite && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, JSON.stringify(login))
+  report(r, `linked${login.account ? ` as ${login.account}` : ''} and handed to the controller — on from the next request`)
 } else if (cmd === 'rollback') {
   if (!/^[0-9a-f]{7,40}$/.test(arg || '')) {
     console.error('usage: node deploy/ctl.mjs rollback <commit sha on the tracked branch>')
@@ -190,6 +240,6 @@ if (cmd === 'status') {
   if (r && r.code !== 0) process.exit(1)
   if (wait) await waitLive({ starts, want: arg, exact: true })
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha>  (restart, admins, rollback: [--wait] [--includes <sha>])')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | linear-key | notion-login | google-login  (restart, admins, rollback: [--wait] [--includes <sha>])')
   process.exit(2)
 }

@@ -1,13 +1,19 @@
 name: deploy
-# The controller, operated from GitHub. Its secrets live in the `production` environment — a run
-# waits for the environment's reviewer, and only main may deploy — never on anyone's machine.
-#   restart   pull main and restart onto it (running turns finish first)
-#   handover  give the controller its tokens and keys from the environment (after a rotation)
-#   rollback  run an earlier commit of main until the next restart or /deploy
-# Each run waits for the next start to go live, and fails if that isn't this commit of main (or,
-# for a rollback, the commit asked for), showing how the start went: the boot lines only, since
-# this log is public.
+# The controller, deployed from GitHub. Every push to main whose tests pass goes live by itself:
+# once the test workflow succeeds, this restarts the controller onto main (running turns finish
+# first) and waits for the next start to go live, failing — with how the start went, the boot lines
+# only, since this log is public — unless it includes that commit. The pull gate and the launcher
+# keep a bad build from taking the bot down (README: "When a deploy goes wrong"). The secrets live
+# in the `production` environment, which only main may deploy, never on anyone's machine. By hand:
+#   restart   pull main and restart onto it
+#   handover  give the controller its tokens and keys from the environment (after a rotation, or
+#             for a new controller box)
+#   rollback  run an earlier commit of main until the next deploy
 on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       action:
@@ -25,11 +31,14 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
+    # By itself: only for a push to main whose tests passed — never for a PR's branch, whatever it's called.
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -42,6 +51,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
           GITHUB_APP_ID: ${{ vars.PUSH_APP_ID }}
           PUSH_APP_PRIVATE_KEY: ${{ secrets.PUSH_APP_PRIVATE_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          SLACK_CONTEXT_SECRET: ${{ secrets.SLACK_CONTEXT_SECRET }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           BOT_ADMINS: ${{ vars.BOT_ADMINS }}
         run: |
           node deploy/ctl.mjs github-token
@@ -50,14 +63,17 @@ jobs:
           printf '%s\n' "$PUSH_APP_PRIVATE_KEY" > "$key"
           GITHUB_APP_KEY="$key" node deploy/ctl.mjs github-app
           rm -f "$key"
+          if [ -n "$SLACK_BOT_TOKEN" ]; then node deploy/ctl.mjs slack-tokens; fi
+          if [ -n "$LINEAR_API_KEY" ]; then node deploy/ctl.mjs linear-key; fi
           node deploy/ctl.mjs hook
           node deploy/ctl.mjs admins "$BOT_ADMINS" --includes "$GITHUB_SHA"
 
       - name: Restart onto main
-        if: inputs.action == 'restart'
+        if: github.event_name == 'workflow_run' || inputs.action == 'restart'
         env:
           BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
-        run: node deploy/ctl.mjs restart --includes "$GITHUB_SHA"
+          COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: node deploy/ctl.mjs restart --includes "$COMMIT"
 
       - name: Roll back
         if: inputs.action == 'rollback'

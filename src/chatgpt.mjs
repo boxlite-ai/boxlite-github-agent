@@ -41,15 +41,18 @@ export function verifyJobToken(secret, token, now = Date.now()) {
 
 /**
  * Issues one token per job and forgets it when the job ends — the proxy honours only live ones.
- * A write turn's job also carries `push` ({ ref, open }): the one ref it may push (gitpush.mjs).
+ * `job` is the job's own record, kept by reference, so the caller reads what the turn did from it:
+ * a write turn's `push` ({ ref, open }) is the one ref it may push (gitpush.mjs), and `tools` the
+ * team's tool services it may use — none unless given — with its calls counted and its changes
+ * listed in `writes` (tools.mjs).
  */
 export function jobTokens(secret) {
-  const live = new Map() // jti → { requests, pushes, push }
+  const live = new Map() // jti → the job: { push, tools, who, requests, pushes, toolCalls, writes, … }
   return {
     live,
-    issue(ttlMs, thread, { push = null } = {}) {
+    issue(ttlMs, thread, job = {}) {
       const jti = randomBytes(12).toString('base64url')
-      live.set(jti, { requests: 0, pushes: 0, push })
+      live.set(jti, Object.assign(job, { push: job.push ?? null, tools: job.tools ?? [], requests: 0, pushes: 0, toolCalls: 0, writes: job.writes ?? [] }))
       const exp = Math.floor((Date.now() + ttlMs) / 1000)
       return signJobToken(secret, { jti, thread, exp, 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro', chatgpt_account_id: BOX_ACCOUNT_ID } })
     },

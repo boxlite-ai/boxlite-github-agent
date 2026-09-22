@@ -1,8 +1,10 @@
-// Runs INSIDE a session box — one box per issue/PR — as the program of each exec. The controller
-// stays attached: it streams the prompt in on stdin and reads Codex's JSONL events from stdout.
+// Runs INSIDE a session box — one box per thread: a GitHub issue or PR, or a Slack thread — as the
+// program of each exec. The controller stays attached: it streams the request in on stdin
+// ({ prompt, files } as JSON) and reads Codex's JSONL events from stdout.
 //
 // Live state is on the box's own disk (git and Codex need rename/append, which the S3-backed
-// volume lacks):  /ctx/repo checkout · /ctx/codex CODEX_HOME (sessions) · /ctx/home HOME.
+// volume lacks): /ctx/repo, a GitHub thread's checkout, or /ctx/work, a Slack thread's working
+// directory (its request's files under slack-files/) · /ctx/codex CODEX_HOME · /ctx/home HOME.
 // After every turn the thread's context (CODEX_HOME) is snapshotted into the thread's
 // subdirectory of the shared volume, sealed with the thread's own key — every box mounts the
 // whole volume, so another thread's box can delete a snapshot but never read or forge one — and
@@ -18,7 +20,7 @@
 // through. Nothing here is a check — Codex could rewrite this runner — the controller checks.
 import { spawn, execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 process.on('SIGHUP', () => {}) // a dropped attach gets a reconnect grace; don't die in it
@@ -28,7 +30,9 @@ const E = process.env
 E.PATH ||= '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const CTX = E.CTX || '/ctx'
 const REPO_DIR = path.join(CTX, 'repo')
+const WORK = E.REPO ? REPO_DIR : path.join(CTX, 'work') // a GitHub thread's checkout, or a Slack thread's directory
 const KEY = Buffer.from(E.CONTEXT_KEY || '', 'base64')
+const RECYCLED = `(From the controller, not a user: this thread has moved to a fresh machine since your last reply. The conversation carried over, but files from earlier turns — clones, builds, installed tools — are gone; recreate what you need.)`
 
 const sh = (cmd, args, { cwd = CTX, input, env } = {}) =>
   execFileSync(cmd, args, { cwd, input, maxBuffer: 512 * 1024 * 1024, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...E, GIT_TERMINAL_PROMPT: '0', ...env } })
@@ -46,13 +50,26 @@ const unseal = (sealed) => {
   return Buffer.concat([d.update(sealed.subarray(28)), d.final()])
 }
 
-/** Fresh box + a snapshot on the volume → bring the thread's Codex home back. */
+/** Fresh box + a snapshot on the volume → bring the thread's Codex home back. True if it did. */
 function restore() {
-  if (existsSync(path.join(CTX, 'codex')) || !E.SNAPSHOT || !existsSync(E.SNAPSHOT)) return
+  if (existsSync(path.join(CTX, 'codex')) || !E.SNAPSHOT || !existsSync(E.SNAPSHOT)) return false
   try {
     sh('tar', ['xzf', '-', '-C', CTX], { input: unseal(readFileSync(E.SNAPSHOT)) })
+    return true
   } catch (e) {
     console.error(`context snapshot unusable, starting fresh: ${e.message}`)
+    return false
+  }
+}
+
+/** A Slack request's attachments, where the prompt says they are — and never outside slack-files/. */
+function saveFiles(files = []) {
+  const root = path.join(WORK, 'slack-files')
+  for (const f of files) {
+    const dest = path.resolve(WORK, String(f.path))
+    if (!dest.startsWith(root + path.sep)) continue
+    mkdirSync(path.dirname(dest), { recursive: true })
+    writeFileSync(dest, Buffer.from(String(f.data), 'base64'))
   }
 }
 
@@ -198,7 +215,7 @@ function pushCommits() {
 function codex(args, prompt) {
   return new Promise((resolve) => {
     const child = spawn('codex', args, {
-      cwd: REPO_DIR,
+      cwd: WORK,
       stdio: ['pipe', 'pipe', 'inherit'],
       env: {
         PATH: E.PATH,
@@ -208,6 +225,9 @@ function codex(args, prompt) {
         CI: '1',
         NO_COLOR: '1',
         GIT_TERMINAL_PROMPT: '0',
+        // The team's tools are MCP servers on the controller, called with this turn's job token
+        // (bearer_token_env_var) — the same token auth.json already holds, useful nowhere else.
+        BOTLITE_JOB_TOKEN: E.BOTLITE_JOB_TOKEN,
         // Commits need an author; the controller replaces them with one commit by the bot anyway.
         ...Object.fromEntries(['AUTHOR', 'COMMITTER'].flatMap((w) => [[`GIT_${w}_NAME`, 'botlite'], [`GIT_${w}_EMAIL`, 'botlite@users.noreply.github.com']])),
       },
@@ -227,9 +247,10 @@ const readStdin = () =>
   })
 
 async function main() {
-  const prompt = await readStdin()
+  const input = await readStdin()
   const result = { type: 'botlite.result' }
   try {
+    const { prompt, files } = JSON.parse(input)
     try {
       mkdirSync(CTX, { recursive: true })
     } catch (e) {
@@ -238,16 +259,24 @@ async function main() {
       sh('sudo', ['mkdir', '-p', CTX], { cwd: '/' })
       sh('sudo', ['chown', `${process.getuid()}:${process.getgid()}`, CTX], { cwd: '/' })
     }
-    restore() // before creating codex/, whose presence means "this box already has the context"
+    const restored = restore() // before creating codex/, whose presence means "this box already has the context"
     for (const d of ['home', 'codex']) mkdirSync(path.join(CTX, d), { recursive: true })
     writeAuth()
     ensureCodex(E.CODEX_VERSION)
     result.tooling = ensureAgentTooling()
     writeCodexConfig() // after agent-tooling: its commands may rewrite the file
-    checkout()
-    excludeToolingState()
-    if (E.PUSH_REF) startFromBase()
-    Object.assign(result, await codex(JSON.parse(E.BOTLITE_ARGS), prompt))
+    if (E.REPO) {
+      checkout()
+      excludeToolingState()
+      if (E.PUSH_REF) startFromBase()
+    } else {
+      mkdirSync(WORK, { recursive: true })
+      saveFiles(files)
+    }
+    rmSync(path.join(CTX, 'last-message.md'), { force: true }) // a failed turn must not post the last turn's answer
+    const args = JSON.parse(E.BOTLITE_ARGS)
+    // Resuming on a machine that just restored the context: Codex remembers files that are gone.
+    Object.assign(result, await codex(args, restored && args[1] === 'resume' ? `${RECYCLED}\n\n${prompt}` : prompt))
     try {
       result.lastMessage = readFileSync(path.join(CTX, 'last-message.md'), 'utf8')
     } catch {

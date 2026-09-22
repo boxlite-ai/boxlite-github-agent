@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { codexArgs, codexConfig, applyEvent, newRun, newSessionPrompt, followUpPrompt } from '../src/codex.mjs'
+import { codexArgs, codexConfig, applyEvent, newRun, newSessionPrompt, followUpPrompt, slackSessionPrompt, slackFollowUpPrompt } from '../src/codex.mjs'
 
 const base = { cwd: '/ctx/repo', outFile: '/ctx/last.md', proxyUrl: 'https://8788-d-abc.proxy.boxlite.ai/' }
 
@@ -123,4 +123,70 @@ test('prompts: every turn says whether it may publish — a follow-up can come f
     assert.doesNotMatch(p, /may publish/)
   }
   assert.match(newSessionPrompt({ login: 'botlite', req, pr }), /You can't publish changes for this request/) // no write info → no publishing
+})
+
+// Slack (slack-channel.mjs): the same Codex, a Slack thread's prompts.
+const talk = {
+  bot: 'botlite',
+  workspace: 'Acme',
+  place: 'a channel',
+  permalink: 'https://acme.slack.com/archives/C1/p1712345699000200?thread_ts=1712345678.000100&cid=C1',
+  asker: 'dave',
+  text: '@botlite why does `npm test` fail on main?',
+  ttl: '15 minutes',
+}
+
+test('slackSessionPrompt: identity, machine, fenced thread with its history, the request, files, reply contract', () => {
+  const p = slackSessionPrompt({
+    ...talk,
+    history: [{ who: '@alice', text: 'CI is red since this morning' }, { who: 'CI (app)', text: 'x'.repeat(5000) }],
+    files: { saved: [{ path: 'slack-files/1712345699.000200/ci.log', size: 12_345, mimetype: 'text/plain' }], skipped: [{ name: 'core.dump', why: 'larger than 5.0 MB' }] },
+  })
+  assert.match(p, /^You are @botlite, a coding agent that people in the Acme Slack workspace summon/)
+  assert.match(p, /after 15 minutes without\none, the thread moves to a fresh machine/)
+  assert.match(p, /You hold no credentials/)
+  assert.match(p, /<slack>\nThread in a channel — https:\/\/acme\.slack\.com\/archives\/C1\/p1712345699000200\?thread_ts=1712345678\.000100&cid=C1\n/)
+  assert.match(p, /Earlier messages in the thread, oldest first:\n\n@alice: CI is red since this morning\n\nCI \(app\): x{1500}\n…\(truncated\)/)
+  assert.match(p, /Request from @dave:\n\n@botlite why does `npm test` fail on main\?\n/)
+  assert.match(p, /saved in your working directory:\n- slack-files\/1712345699\.000200\/ci\.log \(12 KB, text\/plain\)/)
+  assert.match(p, /that you don't have:\n- core\.dump: larger than 5\.0 MB\n<\/slack>/)
+  assert.match(p, /posted verbatim\nas @botlite's reply in this thread\. Write it in standard Markdown/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /Earlier messages|Files attached/) // a thread that starts with the request
+})
+
+test('slackFollowUpPrompt: what was said since the last reply, then only the new request', () => {
+  const p = slackFollowUpPrompt({ ...talk, since: [{ who: '@erin', text: 'I tried node 22, same error' }] })
+  assert.match(p, /^New request in the same thread\.\n\n<slack>\nMessages in the thread since your last reply, oldest first:\n\n@erin: I tried node 22, same error\n\nRequest from @dave — https:\/\/acme/)
+  assert.match(p, /As before, your final message is posted verbatim as @botlite's reply in this thread\.$/)
+  assert.doesNotMatch(slackFollowUpPrompt(talk), /since your last reply/)
+})
+
+test('codexArgs: each tool service is an MCP server at the controller, on the job token, showing only its listed tools', () => {
+  const args = codexArgs({ ...base, tools: [{ name: 'linear', tools: ['get_issue', 'save_comment'] }, { name: 'docs', tools: ['read_doc'] }] })
+  assert.ok(args.includes('mcp_servers.linear={ url = "https://8788-d-abc.proxy.boxlite.ai/mcp/linear", bearer_token_env_var = "BOTLITE_JOB_TOKEN", enabled_tools = ["get_issue", "save_comment"], startup_timeout_sec = 30, tool_timeout_sec = 120 }'))
+  assert.ok(args.some((a) => a.startsWith('mcp_servers.docs={ url = "https://8788-d-abc.proxy.boxlite.ai/mcp/docs"')))
+  assert.equal(codexArgs(base).some((a) => a.startsWith('mcp_servers.')), false)
+  assert.throws(() => codexArgs({ ...base, tools: [{ name: 'linear', tools: ['x"], url = "https://evil'] }] }), /bad tool service/)
+  assert.throws(() => codexArgs({ ...base, tools: [{ name: 'lin ear', tools: [] }] }), /bad tool service/)
+})
+
+test('prompts: the tools, their names and whose account they use; changes only when asked — or read-only', () => {
+  const services = [{ name: 'linear', label: 'Linear', writes: true }, { name: 'docs', label: 'Google Docs', writes: false }]
+  const p = slackSessionPrompt({ ...talk, services })
+  assert.match(p, /You also have tools for the team's Linear and Google Docs \(named mcp__linear__… and mcp__docs__…\),\nsigned in as the bot's own account/)
+  assert.match(p, /You can make some changes, in Linear\. They show up as the bot, so\nmake one only when the request asks for it, and say in your answer what you changed\./)
+  assert.match(slackSessionPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /tools for the team's Notion \(named mcp__notion__…\)[\s\S]*They only read\./)
+  assert.doesNotMatch(slackSessionPrompt(talk), /You also have tools/)
+  assert.doesNotMatch(p, /This thread is public/) // a workspace's members only
+  assert.match(slackFollowUpPrompt({ ...talk, services }), /^New request in the same thread\.\n\nTools this turn: Linear and Google Docs — as before, change things only when asked, and say what you changed\.\n\n<slack>/)
+  assert.match(slackFollowUpPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /Tools this turn: Notion \(they only read\)\./)
+})
+
+test('prompts: on GitHub the tools come only to an admin’s turn, which is told the thread is public', () => {
+  const services = [{ name: 'linear', label: 'Linear', writes: false }]
+  const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' }, services })
+  assert.match(p, /You also have tools for the team's Linear \(named mcp__linear__…\)/)
+  assert.match(p, /This thread is public, and so is your answer: use what the tools show you to do the work, but put\nin your answer only what the request needs, and nothing that shouldn't be public\./)
+  assert.doesNotMatch(newSessionPrompt({ login: 'botlite', req, pr }), /You also have tools|This thread is public/) // everyone else's turn
+  assert.match(followUpPrompt({ login: 'botlite', req, pr, services }), /^New request in the same thread\.\nTools this turn: Linear \(they only read\)\./)
 })
