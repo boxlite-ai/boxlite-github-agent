@@ -111,6 +111,8 @@ fenced as untrusted context, never as instructions.
 
 ## Run your own
 
+The controller requires Node.js 22+ for the global `WebSocket`.
+
 ```bash
 export BOXLITE_API_KEY=blk_live_…
 BOT_ADMINS=you bash deploy/deploy.sh                  # creates the public botlite-controller box
