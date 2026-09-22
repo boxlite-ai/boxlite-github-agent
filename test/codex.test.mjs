@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { codexArgs, codexConfig, applyEvent, newRun, newSessionPrompt, followUpPrompt, slackSessionPrompt, slackFollowUpPrompt } from '../src/codex.mjs'
+import { SLACK_SERVICE } from '../src/slack-tools.mjs'
 
 const base = { cwd: '/ctx/repo', outFile: '/ctx/last.md', proxyUrl: 'https://8788-d-abc.proxy.boxlite.ai/' }
 
@@ -135,6 +136,22 @@ const talk = {
   text: '@botlite why does `npm test` fail on main?',
   ttl: '15 minutes',
 }
+
+test('Slack prompts: sharing is an agent tool on new and resumed turns, with no blanket posting ban', () => {
+  for (const prompt of [slackSessionPrompt, slackFollowUpPrompt]) {
+    const p = prompt({ ...talk, services: [SLACK_SERVICE] })
+    assert.match(p, /mcp__slack__share_channel/)
+    assert.match(p, /"target_channel_id":"C1234567890"/)
+    assert.match(p, /only when the user asks/)
+    assert.match(p, /ask for a channel mention/)
+    assert.match(p, /controller fixes the source/)
+    assert.match(p, /tool result to report success or failure/)
+    assert.doesNotMatch(p, /You cannot post to Slack yourself:/)
+    assert.doesNotMatch(prompt(talk), /mcp__slack__/)
+  }
+  const args = codexArgs({ ...base, tools: [SLACK_SERVICE] })
+  assert.ok(args.includes('mcp_servers.slack={ url = "https://8788-d-abc.proxy.boxlite.ai/mcp/slack", bearer_token_env_var = "BOTLITE_JOB_TOKEN", enabled_tools = ["share_channel"], startup_timeout_sec = 30, tool_timeout_sec = 120 }'))
+})
 
 test('slackSessionPrompt: identity, machine, fenced thread with its history, the request, files, reply contract', () => {
   const p = slackSessionPrompt({

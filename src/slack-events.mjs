@@ -62,7 +62,7 @@ export function threadLabel(req, { asker, channel = '' } = {}) {
 export const mentionedIds = (...texts) => [...new Set(texts.flatMap((t) => [...String(t ?? '').matchAll(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1])))]
 
 /**
- * Slack markup → plain text: <@U1> → @name (names: user id → name), <#C1|general> → #general,
+ * Slack markup → plain text: <@U1> → @name, <#C1|general> → #general (channel ID: C1),
  * <!here> → @here, <https://x|label> → label (https://x), then &lt; &gt; &amp; unescaped — in that
  * order, since a literal "<" arrives as "&lt;" and must not be read as markup.
  */
@@ -72,7 +72,7 @@ export function plainText(text, names = new Map()) {
       const bar = inner.indexOf('|')
       const [target, label] = bar < 0 ? [inner, null] : [inner.slice(0, bar), inner.slice(bar + 1)]
       if (target.startsWith('@')) return `@${names.get(target.slice(1)) ?? label ?? target.slice(1)}`
-      if (target.startsWith('#')) return `#${label ?? target.slice(1)}`
+      if (target.startsWith('#')) return label ? `#${label} (channel ID: ${target.slice(1)})` : `#${target.slice(1)}`
       if (target.startsWith('!')) return label ?? `@${target.slice(1).split('^')[0]}` // <!here>, <!subteam^S1|@devs>, <!date^…|Jan 1>
       if (target.startsWith('mailto:')) return label ?? target.slice(7)
       return label && label !== target ? `${label} (${target})` : target

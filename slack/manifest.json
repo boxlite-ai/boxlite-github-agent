@@ -23,6 +23,8 @@
         "reactions:write",
         "users:read",
         "files:read",
+        "channels:read",
+        "groups:read",
         "channels:history",
         "groups:history",
         "im:history",

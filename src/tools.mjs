@@ -4,6 +4,8 @@
 // own credential and forwards the call to the service's official MCP server. No credential of any
 // of them ever enters a box, and a tool the policy doesn't list can't be called, however Codex is
 // talked to.
+// Slack's share_channel is served locally instead, bound to a channel request by the controller
+// (slack-tools.mjs). It uses the same job authentication and budgets, with no vendor MCP login.
 //
 // MCP here is JSON-RPC over HTTP ("streamable HTTP"): the box POSTs one message at a time, and the
 // answer comes back as JSON or a stream of server-sent events, passed through as it arrives. Only
@@ -11,6 +13,7 @@
 // tools/call for listed tools. (Codex's `enabled_tools` hides the rest from the model; this is what
 // enforces it.)
 import { verifyJobToken } from './chatgpt.mjs'
+import { slackToolRequest } from './slack-tools.mjs'
 
 const G = 'https://www.googleapis.com/auth/'
 /** The services, their official MCP servers, the login each uses — and for Google, the scopes. */
@@ -83,6 +86,14 @@ export function toolBroker({ secret, jobs, logins, policy, fetchImpl = fetch, lo
     const job = claims && jobs.live.get(claims.jti)
     if (!job) return send(res, 403, 'unknown or expired job token')
     const name = /^\/mcp\/([a-z]+)$/.exec(req.url)?.[1]
+    // Slack is a local tool, bound by slack-channel.mjs to this request. GitHub jobs (even
+    // admins' jobs) and DMs never receive this capability; a service name alone cannot grant it.
+    if (name === 'slack') {
+      if (!job.tools?.includes('slack') || typeof job.slack?.shareChannel !== 'function') return send(res, 404, 'no Slack tool for this request')
+      return slackToolRequest(req, res, { job, thread: claims.thread, log, limits,
+        active: () => jobs.live.get(claims.jti) === job && claims.exp > Math.floor(Date.now() / 1000),
+      })
+    }
     const service = Object.hasOwn(SERVICES, name ?? '') ? SERVICES[name] : null
     // Only the services this turn was given (job.tools): every turn's box holds a live job token,
     // and a public GitHub thread's turn that has no tools must not reach them with its own.
