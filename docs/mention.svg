@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="910" height="776" viewBox="0 0 910 776" role="img" aria-labelledby="t">
+  <title id="t">One mention, start to finish: the controller picks up the mention and reacts 👀, starts the thread's box and execs the runner; the box restores its context, runs Codex, whose model calls go through the controller to chatgpt.com, seals its context and returns the answer; the controller stops the box, then replies.</title>
+  <style>
+    :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #151b23; --frame: #3d444d; --ink: #f0f6fc; --muted: #9198a1; --rule: #3d444d; --rule-strong: #656c76; --bubble: #0d1117; --blue: #4493f8; --blue-soft: #102a4c; --amber: #d29922; --amber-soft: #2e2410; --green: #3fb950; }
+    }
+    text { fill: var(--ink); font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; }
+    .small { font-size: 12px; }
+    .muted { fill: var(--muted); }
+    .blue { fill: var(--blue); font-weight: 600; }
+    .amber { fill: var(--amber); }
+    .frame { fill: var(--bg); stroke: var(--frame); }
+    .ext { fill: var(--bg); stroke: var(--rule-strong); stroke-width: 1.2; }
+    .trusted { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.6; }
+    .untrusted { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 1.6; stroke-dasharray: 6 4; }
+    .card { fill: var(--bg); stroke: var(--rule-strong); }
+    .bubble { fill: var(--bubble); stroke: var(--rule); }
+    .life { stroke: var(--rule-strong); stroke-dasharray: 3 4; }
+    .edge { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+    .back { stroke: var(--ink); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; opacity: 0.8; }
+    .secret { stroke: var(--blue); stroke-width: 1.6; fill: none; }
+    .token { stroke: var(--amber); stroke-width: 1.6; fill: none; stroke-dasharray: 6 4; }
+    .ah { fill: var(--ink); }
+    .ah-blue { fill: var(--blue); }
+    .ah-amber { fill: var(--amber); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-blue" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-amber" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="frame" x="0.5" y="0.5" width="909" height="775" rx="12"/>
+
+  <!-- lanes -->
+  <rect class="ext" x="12" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="80" y="39" text-anchor="middle">GitHub</text>
+  <rect class="trusted" x="212" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="280" y="39" text-anchor="middle">controller</text>
+  <rect class="untrusted" x="412" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="480" y="39" text-anchor="middle">session box</text>
+  <rect class="ext" x="592" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="660" y="39" text-anchor="middle">volume</text>
+  <rect class="ext" x="762" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="830" y="39" text-anchor="middle">chatgpt.com</text>
+  <line class="life" x1="80" y1="52" x2="80" y2="764"/>
+  <line class="life" x1="280" y1="52" x2="280" y2="764"/>
+  <line class="life" x1="480" y1="52" x2="480" y2="764"/>
+  <line class="life" x1="660" y1="52" x2="660" y2="764"/>
+  <line class="life" x1="830" y1="52" x2="830" y2="764"/>
+
+  <!-- 1 mention -->
+  <rect class="bubble" x="18" y="72" width="124" height="28" rx="7"/>
+  <text class="small" x="80" y="91" text-anchor="middle">@mention posted</text>
+
+  <!-- 2 pickup -->
+  <line class="edge" x1="80" y1="140" x2="278" y2="140" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="132" text-anchor="middle">picked up · poll ≤ 60 s</text>
+  <text class="small muted" x="180" y="156" text-anchor="middle">or App push ~1 s</text>
+
+  <!-- 3 eyes -->
+  <line class="edge" x1="280" y1="196" x2="82" y2="196" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="188" text-anchor="middle">👀 on the comment, first</text>
+
+  <!-- 4 start the box -->
+  <line class="edge" x1="280" y1="244" x2="478" y2="244" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="236" text-anchor="middle">start box</text>
+  <text class="small muted" x="380" y="260" text-anchor="middle">create if gone</text>
+
+  <!-- 5 exec the runner -->
+  <line class="edge" x1="280" y1="300" x2="478" y2="300" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="292" text-anchor="middle">exec runner</text>
+  <text class="small muted" x="380" y="316" text-anchor="middle">prompt on stdin</text>
+
+  <!-- 6 restore -->
+  <line class="edge" x1="660" y1="356" x2="482" y2="356" marker-end="url(#ah)"/>
+  <text class="small" x="570" y="348" text-anchor="middle">sealed context</text>
+  <text class="small muted" x="570" y="372" text-anchor="middle">only on a fresh box</text>
+
+  <!-- 7 work -->
+  <rect class="card" x="352" y="392" width="256" height="34" rx="7"/>
+  <text x="480" y="414" text-anchor="middle">checkout · codex exec | resume</text>
+
+  <!-- 8 model call -->
+  <line class="token" x1="480" y1="460" x2="282" y2="460" marker-end="url(#ah-amber)"/>
+  <text class="small amber" x="380" y="452" text-anchor="middle">model call + job token</text>
+  <line class="secret" x1="280" y1="492" x2="828" y2="492" marker-end="url(#ah-blue)"/>
+  <text class="small blue" x="745" y="484" text-anchor="middle">same call + real login</text>
+
+  <!-- 9 streamed back -->
+  <line class="back" x1="830" y1="530" x2="282" y2="530" marker-end="url(#ah)"/>
+  <text class="small" x="745" y="522" text-anchor="middle">answer, streamed</text>
+  <line class="back" x1="280" y1="562" x2="478" y2="562" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="554" text-anchor="middle">streamed through</text>
+
+  <!-- 10 seal -->
+  <line class="edge" x1="480" y1="610" x2="658" y2="610" marker-end="url(#ah)"/>
+  <text class="small" x="570" y="602" text-anchor="middle">seal context</text>
+
+  <!-- 11 answer -->
+  <line class="edge" x1="480" y1="654" x2="282" y2="654" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="646" text-anchor="middle">answer + session id</text>
+
+  <!-- 12 stop the box, 13 reply -->
+  <line class="edge" x1="280" y1="698" x2="478" y2="698" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="690" text-anchor="middle">stop box</text>
+  <line class="edge" x1="280" y1="742" x2="82" y2="742" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="734" text-anchor="middle">reply as @boxliteai</text>
+</svg>
