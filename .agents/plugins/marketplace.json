@@ -1,0 +1,22 @@
+{
+  "name": "boxlite-agent-tooling",
+  "interface": {
+    "displayName": "Boxlite Agent Tooling"
+  },
+  "plugins": [
+    {
+      "name": "boxlite-agent-tooling",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/boxlite-ai/agent-tooling.git",
+        "ref": "main",
+        "path": "./plugins/boxlite-agent-tooling"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

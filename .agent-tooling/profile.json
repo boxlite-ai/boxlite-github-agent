@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "profile": "boxlite-github-agent",
+  "repository": "boxlite-ai/boxlite-github-agent",
+  "tooling": {
+    "repository": "boxlite-ai/agent-tooling",
+    "ref": "main"
+  },
+  "checks": [
+    {
+      "name": "test",
+      "command": "npm test"
+    }
+  ]
+}
