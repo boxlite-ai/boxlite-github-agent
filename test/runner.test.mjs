@@ -131,7 +131,7 @@ test('runner: every codex in the box goes through the controller — the routing
     assert.equal(count(/^model_provider = "botlite"$/gm), 1)
     assert.equal(count(/^\[model_providers\.botlite\]$/gm), 1)
     assert.equal(count(/old\.example/g), 0)
-    assert.equal(count(new RegExp(`"${proxy.replace(/\./g, '\\.')}/backend-api/codex"`, 'g')), 1)
+    assert.equal(config().split(`"${proxy}/backend-api/codex"`).length - 1, 1)
     assert.ok(config().includes(agentTooling), config()) // agent-tooling's own settings, untouched
     assert.ok(config().indexOf('chatgpt_base_url') < config().indexOf('['), 'top-level keys come before any table')
   }
