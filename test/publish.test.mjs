@@ -205,6 +205,20 @@ test('publishWrite: checks the pushed commit, squashes it as the bot onto the ba
   assert.equal(t.gh.called('DELETE', /botlite-staging/).length, 1)
 })
 
+test('publishWrite: a PR on the bot’s own repo that touches its trust boundary says so, at the top and in the reply', async () => {
+  const tree = [
+    ['GET', new RegExp(`^/repos/botlite/app/git/trees/${TREE}$`), { tree: [{ path: 'src', type: 'tree', sha: 'SRC' }] }],
+    ['GET', /^\/repos\/botlite\/app\/git\/trees\/SRC$/, { tree: [{ path: 'a.js', ...blob() }, { path: 'publish.mjs', ...blob() }] }],
+  ]
+  const self = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')], extra: tree })
+  assert.equal(await self.publish({ selfRepo: 'Acme/App' }), '📬 Opened draft PR https://github.com/acme/app/pull/12. It changes my own trust boundary (`src/publish.mjs`) — review it closely.')
+  assert.match(self.gh.called('POST', /pulls$/)[0].body.body, /^> \[!WARNING\]\n> This changes the bot's own trust boundary — `src\/publish\.mjs`\. Review it closely: once merged, an admin's `\/deploy` puts it live\./)
+
+  const other = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')], extra: tree })
+  assert.equal(await other.publish({ selfRepo: 'acme/bot' }), '📬 Opened draft PR https://github.com/acme/app/pull/12.') // not the bot's own repo
+  assert.doesNotMatch(other.gh.called('POST', /pulls$/)[0].body.body, /WARNING/)
+})
+
 test('publishWrite: a refused change publishes nothing and says why; staging is cleaned up either way', async () => {
   const t = await pushedTurn({ files: [file('src/a.js'), file('.gitmodules')] })
   assert.equal(await t.publish(), '⚠️ Not published: it touches `.gitmodules` — I never change workflows, actions, CODEOWNERS, submodules or funding links.')

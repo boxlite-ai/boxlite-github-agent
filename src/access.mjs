@@ -19,7 +19,9 @@ export const COMMANDS = [
   { name: 'pause', admin: true, usage: '/pause', does: 'stop all PR writing, everywhere' },
   { name: 'resume', admin: true, usage: '/resume', does: 'start it again' },
   { name: 'model', admin: true, usage: '/model [model] [effort]', does: 'show or set the model and reasoning effort every turn runs on' },
+  { name: 'deploy', admin: true, usage: '/deploy', does: "put what's merged on main live — running turns finish first, and a build that won't start is rolled back" },
 ]
+const short = (sha) => String(sha ?? '').slice(0, 7)
 
 /** The model and effort turns run on: an admin's `/model` (state.codex), else the deploy's defaults. */
 export const modelOf = (state, defaults = {}) => ({ model: state.codex?.model ?? defaults.model ?? null, effort: state.codex?.effort ?? defaults.effort ?? null })
@@ -88,9 +90,10 @@ export function helpText({ login, req, access, isAdmin, left, limit, running }) 
  * Carry out a command; returns the reply text. Admin commands count only in a comment that was
  * never edited: anyone with write access to a repo can edit other people's comments there, so an
  * edited comment is not proof of what its author wrote. `lookup(login)` → { id, login } | null;
- * `models()` → the backend's catalog for this Codex version, [{ slug, efforts, listed }].
+ * `models()` → the backend's catalog for this Codex version, [{ slug, efforts, listed }];
+ * `deploy()` → what's on the tracked branch since the running build (deploy.mjs: deployPlan).
  */
-export async function runCommand(cmd, { state, admins, req, login, lookup, models, defaults, access, left, limit, now = new Date() }) {
+export async function runCommand(cmd, { state, admins, req, login, lookup, models, deploy, defaults, access, left, limit, now = new Date() }) {
   const help = () => helpText({ login, req, access, isAdmin: admins.has(req.userId), left, limit, running: modelOf(state, defaults) })
   if (cmd.unknown) return `I don't know \`/${cmd.unknown}\`.\n\n${help()}`
   if (cmd.name === 'help') return help()
@@ -100,6 +103,7 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, model
 
   const at = now.toISOString()
   if (cmd.name === 'model') return setModel(cmd.arg, { state, who, models, defaults, at, by: req.author })
+  if (cmd.name === 'deploy') return startDeploy({ state, who, deploy, req, at })
   const grants = (state.grants ??= {})
   const here = grants[repoKey(req.repo)] ?? {}
   if (cmd.name === 'pause') {
@@ -127,6 +131,27 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, model
   if (!current[user.id]) return `${who} @${user.login} wasn't on the list for ${req.repo}.`
   delete current[user.id]
   return `${who} ✅ @${user.login} can no longer ask me for PRs in ${req.repo}.`
+}
+
+/**
+ * `/deploy` puts live what humans merged on the tracked branch since the running build — never a
+ * PR branch, never rewritten history. It only records the deploy (state.deploy); the controller
+ * restarts once the reply is posted, and the next build reports back (deploy.mjs: deployOutcome).
+ */
+async function startDeploy({ state, who, deploy, req, at }) {
+  if (state.deploy) return `${who} a deploy to \`${short(state.deploy.to)}\` is already under way.`
+  let plan
+  try {
+    plan = await deploy()
+  } catch (e) {
+    return `${who} I couldn't see what's on main, so nothing changed: ${e.message.slice(0, 200)}`
+  }
+  if (plan.status === 'identical' || !plan.commits.length) return `${who} I'm already running \`${short(plan.from)}\` — there's nothing new on main.`
+  if (plan.status !== 'ahead') return `${who} main isn't ahead of the build I'm running (it's ${plan.status}), so I won't deploy it — someone rewrote its history. Deploy by hand.`
+  state.deploy = { from: plan.from, to: plan.to, by: req.author, at, reply: { repo: req.repo, number: req.number, kind: req.kind, commentId: req.commentId } }
+  const n = plan.commits.length
+  const list = plan.commits.slice(-10).map((c) => `- \`${short(c.sha)}\` ${c.title}`).join('\n')
+  return `${who} 🚀 deploying \`${short(plan.from)}\` → \`${short(plan.to)}\`, ${n} commit${n === 1 ? '' : 's'}:\n\n${n > 10 ? '- …\n' : ''}${list}\n\nRunning turns finish first; I'll say here when it's live.`
 }
 
 /**

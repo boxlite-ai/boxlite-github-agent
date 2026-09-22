@@ -24,14 +24,15 @@ export async function loadState(file) {
     paused: raw.paused ?? null, // { by, at } while an admin has PR writing paused
     forks: raw.forks ?? {}, // "owner/repo" (lower case) → the bot's fork, "bot/repo"
     codex: raw.codex ?? null, // { model, effort, by, at } from an admin's /model
+    deploy: raw.deploy ?? null, // { from, to, by, at, reply } while an admin's /deploy waits for the new build
   }
 }
 
 export async function saveState(file, state) {
   const seen = [...state.seen].slice(-MAX_SEEN)
   state.seen = new Set(seen)
-  const { lastModified, threads, usage, grants, paused, forks, codex } = state
-  const data = JSON.stringify({ lastModified, seen, threads, usage, grants, paused, forks, codex })
+  const { lastModified, threads, usage, grants, paused, forks, codex, deploy } = state
+  const data = JSON.stringify({ lastModified, seen, threads, usage, grants, paused, forks, codex, deploy })
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, data, { mode: 0o600 })

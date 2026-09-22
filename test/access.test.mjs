@@ -151,6 +151,29 @@ test('helpText: says which model turns run on', async () => {
   assert.match(help, /\*\*Model:\*\* `gpt-6-astra` at `xhigh` effort\./)
 })
 
+test('runCommand /deploy: shows what goes live and records it; refuses nothing new, rewritten history, non-admins', async () => {
+  const A = 'a'.repeat(40)
+  const B = 'b'.repeat(40)
+  const C = 'c'.repeat(40)
+  const plan = { from: A, to: C, status: 'ahead', commits: [{ sha: B, title: 'feat: one (#12)' }, { sha: C, title: 'fix: two (#13)' }] }
+  const state = { grants: {}, paused: null, deploy: null }
+  const text = await runCommand({ name: 'deploy', arg: '' }, ctx(state, { deploy: async () => plan, req: req({ userId: 1, author: 'root', number: 7, kind: 'comment', commentId: 99 }) }))
+  assert.equal(text, "@root 🚀 deploying `aaaaaaa` → `ccccccc`, 2 commits:\n\n- `bbbbbbb` feat: one (#12)\n- `ccccccc` fix: two (#13)\n\nRunning turns finish first; I'll say here when it's live.")
+  assert.deepEqual(state.deploy, { from: A, to: C, by: 'root', at: '2026-09-22T10:00:00.000Z', reply: { repo: 'Acme/App', number: 7, kind: 'comment', commentId: 99 } })
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(state, { deploy: async () => plan })), /a deploy to `ccccccc` is already under way/)
+
+  const fresh = () => ({ grants: {}, paused: null, deploy: null })
+  const none = fresh()
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(none, { deploy: async () => ({ from: A, to: A, status: 'identical', commits: [] }) })), /already running `aaaaaaa` — there's nothing new on main/)
+  const rewritten = fresh()
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(rewritten, { deploy: async () => ({ ...plan, status: 'diverged' }) })), /main isn't ahead of the build I'm running \(it's diverged\), so I won't deploy it/)
+  const down = fresh()
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(down, { deploy: async () => { throw new Error('HTTP 502') } })), /couldn't see what's on main, so nothing changed: HTTP 502/)
+  const stranger = fresh()
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(stranger, { deploy: async () => plan, req: req({ association: 'OWNER' }) })), /only this bot's admins can use `\/deploy`/)
+  for (const s of [none, rewritten, down, stranger]) assert.equal(s.deploy, null) // nothing recorded, nothing restarts
+})
+
 test('runCommand /add: two at once on a repo with no grants yet both stick', async () => {
   const state = { grants: {}, paused: null }
   let release
