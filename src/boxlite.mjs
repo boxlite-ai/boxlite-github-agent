@@ -49,6 +49,7 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
         try {
           return await attachOnce(id, execId, opts)
         } catch (e) {
+          if (opts.signal?.aborted) throw e
           if (!e.beforeOpen || attempt >= (opts.handshakeRetries ?? 5)) throw e
           await new Promise((r) => setTimeout(r, (opts.retryDelayMs ?? 2000) * attempt))
         }
@@ -56,13 +57,16 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
     },
   }
 
-  function attachOnce(id, execId, { stdin, onStdout, onStderr, timeoutMs }) {
+  function attachOnce(id, execId, { stdin, onStdout, onStderr, timeoutMs, signal }) {
+    signal?.throwIfAborted()
     return new Promise((resolve, reject) => {
       const ws = new WebSocketImpl(`${root.replace(/^http/, 'ws')}/v1/boxes/${id}/executions/${execId}/attach`, { headers })
       ws.binaryType = 'arraybuffer'
       let exitCode = null
       let failure = null
       let opened = false
+      const abort = () => { failure = new Error('Execution cancelled.'); ws.close() }
+      signal?.addEventListener('abort', abort, { once: true })
       const timer = setTimeout(() => {
         failure = new Error(`attach timed out after ${Math.round(timeoutMs / 1000)}s`)
         ws.close()
@@ -89,6 +93,7 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
         failure ??= new Error(`attach failed: ${e.message || 'websocket error'}`)
       }
       ws.onclose = () => {
+        signal?.removeEventListener('abort', abort)
         clearTimeout(timer)
         if (exitCode !== null && !failure) return resolve(exitCode)
         const err = failure ?? new Error('attach closed before the exec exited')

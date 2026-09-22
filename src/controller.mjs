@@ -141,7 +141,7 @@ const schedule = scheduler(cfg.maxConcurrent)
 let inflight = 0 // turns accepted and not yet answered
 let draining = false // SIGTERM: take no new work, let running turns finish
 let saving = Promise.resolve()
-const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state)).catch((e) => log(`state not saved: ${e.message}`)))
+const persist = () => (saving = saving.then(() => saveState(cfg.stateFile, state)).catch((e) => { log(`state not saved: ${e.message}`); return false }))
 
 // The proxy comes up first — it's what the deploy health check looks for — and only ever serves
 // live job tokens, so it's safe before the ChatGPT login exists.

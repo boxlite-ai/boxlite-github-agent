@@ -2,7 +2,7 @@
 // of it is unit-tested.
 //
 // A request is a new message from a person that either mentions the bot (`app_mention`, in any
-// channel the bot was added to) or is sent to the bot directly (`message.im`). Its answer goes in
+// channel the bot was added to), follows up in a subscribed thread, or is sent directly. Its answer goes in
 // the message's thread, and the thread — workspace, channel, parent message — is what a box, a
 // Codex session and a sealed context belong to.
 
@@ -18,9 +18,13 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * bot's message counts, its own least of all, and neither does an edit — an edit isn't a new
  * request (and edits re-deliver `app_mention` for old messages); asking again means a new message.
  */
-export function requestFromEvent(payload, bot) {
+export function requestFromEvent(payload, bot, { threads = {}, allMessages = false } = {}) {
   const e = payload?.event
-  if (!e || !(e.type === 'app_mention' || (e.type === 'message' && e.channel_type === 'im'))) return null
+  if (!e || !['app_mention', 'message'].includes(e.type)) return null
+  const dm = e.channel_type === 'im' || e.channel?.startsWith('D')
+  const following = e.thread_ts && threads[`${payload.team_id}/${e.channel}/${e.thread_ts}`]?.subscribed
+  const mentioned = mentionedIds(e.text).includes(bot.userId)
+  if (e.type !== 'app_mention' && !mentioned && !dm && !following && !allMessages) return null
   if (!NEW_MESSAGE.has(e.subtype) || e.edited || e.bot_id || !e.user || e.user === bot.userId) return null
   // The ids become box names and volume paths: anything else than Slack's own formats is refused.
   if (![payload.team_id, e.channel, e.user].every((v) => ID.test(v ?? '')) || !TS.test(e.ts ?? '') || (e.thread_ts && !TS.test(e.thread_ts))) return null
@@ -35,6 +39,8 @@ export function requestFromEvent(payload, bot) {
     text: e.text ?? '',
     files: (e.files ?? []).map((f) => ({ id: f.id, name: f.name || f.title || f.id, mimetype: f.mimetype ?? '', size: f.size ?? 0, url: f.mode === 'external' ? null : (f.url_private_download ?? null) })),
     extShared: Boolean(payload.is_ext_shared_channel), // a Slack Connect channel: people from another organization are in it
+    ...(e.action_token ? { actionToken: e.action_token } : {}),
+    ...(e.type === 'message' && !dm ? { automatic: true } : {}),
   }
 }
 
@@ -72,7 +78,7 @@ export function plainText(text, names = new Map()) {
       const bar = inner.indexOf('|')
       const [target, label] = bar < 0 ? [inner, null] : [inner.slice(0, bar), inner.slice(bar + 1)]
       if (target.startsWith('@')) return `@${names.get(target.slice(1)) ?? label ?? target.slice(1)}`
-      if (target.startsWith('#')) return `#${label ?? target.slice(1)}`
+      if (target.startsWith('#')) return label ? `#${label} (channel ID: ${target.slice(1)})` : `#${target.slice(1)}`
       if (target.startsWith('!')) return label ?? `@${target.slice(1).split('^')[0]}` // <!here>, <!subteam^S1|@devs>, <!date^…|Jan 1>
       if (target.startsWith('mailto:')) return label ?? target.slice(7)
       return label && label !== target ? `${label} (${target})` : target

@@ -15,6 +15,7 @@ const KNOWN = ['lastModified', 'polledAt', 'sweeps', 'seen', 'threads', 'usage',
 
 /** Slack's memory, apart from GitHub's (slack-channel.mjs): the ids of both could collide. */
 const slackPart = (raw = {}) => ({
+  ...raw,
   seen: new Set(raw.seen ?? []), // "C…:<ts>" messages handled
   threads: raw.threads ?? {}, // "T…/C…/<thread ts>" → { sessionId, lastTs, lastUsed, label (its box's name) }
   usage: raw.usage ?? {}, // Slack user id → { day: 'YYYY-MM-DD', count }
@@ -65,7 +66,7 @@ export async function saveState(file, state, now = Date.now()) {
   const s = state.slack
   s.seen = new Set([...s.seen].slice(-MAX_SEEN))
   for (const [key, t] of Object.entries(s.threads)) if (now - Date.parse(t.lastUsed) > SLACK_THREAD_TTL_MS) delete s.threads[key]
-  const slack = { seen: [...s.seen], threads: s.threads, usage: s.usage, deferred: s.deferred }
+  const slack = { ...s, seen: [...s.seen], deferred: s.deferred.map(({ actionToken, ...req }) => req) }
   const { lastModified, polledAt, sweeps, threads, usage, grants, paused, forks, codex, deploy } = state
   const data = JSON.stringify({ ...state.unknown, lastModified, polledAt, sweeps, seen, threads, usage, grants, paused, forks, codex, deploy, slack })
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })

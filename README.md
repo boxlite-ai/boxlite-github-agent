@@ -156,9 +156,82 @@ not dropped.
 ## In Slack
 
 Mention `@boxliteai` in a channel it's in, or send it a direct message. It answers in the thread,
-and a follow-up there (a mention again, in a channel) continues the same session. Attach logs,
+and subsequent human messages in that thread continue the same session without another mention.
+Slack's Agent View supplies the currently viewed channel as context for direct messages. Attach logs,
 screenshots or code to the message and the box gets them too: up to 5 MB a file and 8 MB a message.
 They reach that thread's box only, on the exec's stdin, and never go on a volume.
+
+**Slack actions are agent tools.** The model composes reusable operations to carry out a request;
+there is no special command for sharing, summaries or triage. For example:
+
+```text
+@boxliteai Read this thread and post its decisions in #team-updates, with a link back here.
+@boxliteai Every 60 minutes, summarize new support questions in this channel. Stay silent if there are none.
+@boxliteai At 2027-01-15T09:00:00Z, remind this thread to review the release checklist.
+@boxliteai Watch this channel for support questions. Reply with relevant links; otherwise stay silent.
+```
+
+The local Slack MCP server exposes `list_channels`, `channel_info`, `read_history`, `read_thread`,
+`post_message`, `add_reaction` and `message_link`. `search` is available only when the incoming
+interaction includes Slack's action token, and searches public context on that user's behalf.
+It is unavailable to scheduled tasks. Channel tools require an internal channel the bot belongs
+to; private channels also require the requester to belong. Reads of another private channel must
+be requested in a DM, so its contents do not enter a shared thread's session. Direct messages are
+limited to the request's own DM. The tools cannot join channels, invite users, edit messages or
+initiate other DMs.
+
+`create_task`, `list_tasks` and `control_task` save and manage standing instructions on the
+controller. Tasks belong to their creator and original thread; ask there to list, pause, resume or
+cancel them. Supported triggers are intervals of at least five minutes, a one-time absolute UTC
+timestamp, and new human channel messages. Watches process messages outside conversations already
+routed to the agent; bot messages never trigger them. Instructions authorize the work, while watched
+messages are treated as untrusted context. Background runs cannot create further tasks or publish PRs.
+
+Tasks survive VM disposal and controller restarts. The scheduler checks every 15 seconds, coalesces
+missed intervals into one run, and uses the usual per-thread queue, concurrency and daily quota.
+It rechecks the creator's access and the source channel before each run. Failed or interrupted runs
+pause for review instead of replaying potentially completed actions. Each task retains its latest
+result and recorded changes. There are at most 10 active/paused tasks per user and 100 overall;
+watches pause if their 20-event queue fills. Pausing retains queued events; cancelling discards them.
+`NO_REPLY` lets a turn stay silent, but successful tool changes still produce an audit in the thread.
+
+**End to end:**
+
+```mermaid
+sequenceDiagram
+    participant S as Slack
+    participant C as Controller
+    participant A as Agent in BoxLite
+    participant T as Saved tasks
+    S->>C: Mention, DM or subscribed thread message
+    C->>C: Check member policy, deduplicate, enqueue
+    C->>S: Mark session processing
+    C->>A: Request, thread context and scoped job token
+    A->>C: MCP tool call (read, post, react or save task)
+    C->>C: Check live token, arguments, channel access and budget
+    alt Slack operation
+        C->>S: Web API call with controller-held bot token
+        S-->>C: Result
+    else Explicitly requested automation
+        C->>T: Persist instructions, owner and trigger
+    end
+    C-->>A: Tool result
+    A-->>C: Answer or NO_REPLY
+    C->>S: Reply and changes; mark session active
+    T->>C: Timer due or queued channel event
+    C->>C: Recheck access; enqueue another agent turn
+```
+
+The VM never receives the Slack bot token. Its job token opens only that turn's tools, with the
+shared 60-call/10-change budget. Identical Slack writes within a run return the first result,
+including uncertain failures. Slack's native Stop button revokes the turn's token and cancels
+execution; no subsequent Slack call or rate-limit retry can start. A write already accepted by
+Slack may finish, and its confirmed effect is reported. Stopping a background run also pauses
+its saved task. Stop does not undo changes.
+
+Personal Linear, Notion and Google tools keep their existing DM-only access rules. A task saved
+in a DM uses its creator's linked accounts, loaded again at each run; a channel task has Slack
+tools only.
 
 **A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into any
 public repo (`SLACK_PR_REPOS` in `src/policy.mjs` can narrow that, to `boxlite-ai/*` say). A Slack thread
@@ -320,6 +393,8 @@ else would go stale.
 | `src/deploy.mjs` | controller | `/deploy`: what's merged since the running build, and how the deploy went |
 | `src/mentions.mjs` · `webhook.mjs` | controller | mentions from polled notifications or App pushes |
 | `src/slack-channel.mjs` | controller | Slack: who may ask, each message to a turn, the answer back |
+| `src/slack-tools.mjs` · `local-mcp.mjs` | controller | reusable Slack tools; live-token checks, channel access, validation and duplicate-write handling |
+| `src/slack-tasks.mjs` | controller | persistent scheduled tasks and channel watches, ownership, recovery and latest-run audits |
 | `src/slack-socket.mjs` · `slack-events.mjs` | controller | Socket Mode events, acked at once; Slack events → requests, markup → text, files |
 | `src/slack.mjs` · `slack-reply.mjs` | controller | Slack Web API as the bot: 👀, replies, file downloads |
 | `src/policy.mjs` | controller | your policy: who may use the bot in Slack, which tools it may use |
@@ -371,9 +446,17 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
   App-Level Tokens*, generate one with the `connections:write` scope: that's the `xapp-…` token.
   *Install App → Install to Workspace* gives the *Bot User OAuth Token*, `xoxb-…`. Optionally,
   upload `slack/icon.png` as the app icon. Invite the bot where people should use it:
-  `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in. The
-  manifest leaves out `channels:read` and `groups:read`; add them if you want channel threads'
-  boxes named after their channel, not only after who started them.
+  `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in.
+  Existing installations must apply the updated manifest and reinstall to grant its new scopes:
+  `channels:read`, `groups:read`, `assistant:write` and `search:read.public`. Enable the added
+  `message.channels`, `message.groups`, `agent_session_stopped` and `app_context_changed` events.
+  The manifest uses [`features.agent_view`](https://docs.slack.dev/reference/app-manifest/)
+  for Slack's current agent experience; migrating an existing `assistant_view` app is irreversible.
+  [Session status](https://docs.slack.dev/reference/methods/agents.sessions.setStatus/) powers the
+  processing indicator and Stop control. If the workspace lacks that feature, ordinary thread
+  replies still work; status failures are logged. Updating this repository alone does not change
+  the installed Slack app. Check one mention, one unmentioned follow-up, an explicitly requested
+  post, a scheduled task and Stop in a test channel after installing.
 - **ChatGPT login:** the controller runs `codex login --device-auth` in its box, and `status` shows
   the link and code to approve with the bot's ChatGPT account. Use an account only the bot uses,
   and never copy another controller's `auth.json`: each refresh rotates the token, so two holders of
@@ -461,8 +544,14 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (nee
   upstream changed a workflow file since the last sync, GitHub refuses that sync unless the bot's
   PAT has the `workflow` scope, and then refuses the push, which would bring that change in. The
   reply says which workflow and what the operator can do.
-- **One Slack workspace, answers only.** It's an internal app on Socket Mode; offering it to other
-  workspaces would take OAuth and the Events API. It sees only its thread, and posts only there.
+- **One Slack workspace.** It's an internal app on Socket Mode; offering it to other workspaces
+  would take OAuth and the Events API. Slack actions use the bot's membership and the requester's
+  authority. Search depends on Slack's feature availability and interaction token; private search
+  and autonomous direct messages are not supported.
+- **Automations run while the controller is online.** Timers survive downtime, but Slack events
+  missed while Socket Mode is disconnected are not backfilled. Schedules support intervals and
+  absolute UTC times, not cron expressions or local-time calendars. Inspect an interrupted task's
+  earlier changes before resuming it; an upstream write can succeed before its response is lost.
 - **The box has the open internet.** A Slack thread's text, private channels included, and whatever
   the tools read go into a machine that can send them anywhere if a message talks Codex into it.
   Keep the bot out of channels whose contents must not leave.

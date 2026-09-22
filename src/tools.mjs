@@ -11,6 +11,7 @@
 // tools/call for listed tools. (Codex's `enabled_tools` hides the rest from the model; this is what
 // enforces it.)
 import { verifyJobToken } from './chatgpt.mjs'
+import { localMcp } from './local-mcp.mjs'
 
 const G = 'https://www.googleapis.com/auth/'
 /** The services, their official MCP servers, the login each uses — and for Google, the scopes. */
@@ -83,6 +84,10 @@ export function toolBroker({ secret, jobs, policy, fetchImpl = fetch, log = () =
     const job = claims && jobs.live.get(claims.jti)
     if (!job) return send(res, 403, 'unknown or expired job token')
     const name = /^\/mcp\/([a-z]+)$/.exec(req.url)?.[1]
+    if (name === 'slack') {
+      if (!job.tools?.includes('slack') || !job.slack?.tools) return send(res, 404, 'no Slack tools for this request')
+      return localMcp(req, res, { job, limits, active: () => jobs.live.get(claims.jti) === job && claims.exp > Math.floor(Date.now() / 1000) })
+    }
     const service = Object.hasOwn(SERVICES, name ?? '') ? SERVICES[name] : null
     // Only the services this turn was given (job.tools): every turn's box holds a live job token,
     // and a public GitHub thread's turn that has no tools must not reach them with its own.
@@ -111,7 +116,11 @@ export function toolBroker({ secret, jobs, policy, fetchImpl = fetch, log = () =
     res.on('close', () => abort.abort()) // the box hung up → stop the upstream stream
     try {
       const headers = Object.fromEntries(REQ_HEADERS.filter((h) => req.headers[h]).map((h) => [h, req.headers[h]]))
-      const forward = async () => fetchImpl(service.url, { method: req.method, headers: { ...headers, authorization: `Bearer ${await login.token()}` }, body, signal: abort.signal })
+      const forward = async () => {
+        const token = await login.token()
+        if (jobs.live.get(claims.jti) !== job || claims.exp <= Math.floor(Date.now() / 1000)) throw new Error('This request has stopped or expired.')
+        return fetchImpl(service.url, { method: req.method, headers: { ...headers, authorization: `Bearer ${token}` }, body, signal: abort.signal })
+      }
       let up = await forward()
       if (up.status === 401 && login.refresh) {
         await up.body?.cancel()
@@ -128,7 +137,10 @@ export function toolBroker({ secret, jobs, policy, fetchImpl = fetch, log = () =
       res.writeHead(up.status, out)
       if (up.body) for await (const chunk of up.body) res.write(chunk)
       res.end()
-      if (call.write && up.ok) job.writes.push(`${service.label} ${call.tool}`)
+      if (call.write && up.ok) {
+        job.writes.push(`${service.label} ${call.tool}`)
+        await job.slack?.record?.()
+      }
     } catch (e) {
       if (abort.signal.aborted) return
       log(`${service.label} (${claims.thread}): ${e.message}`)

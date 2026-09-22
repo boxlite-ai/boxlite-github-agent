@@ -54,7 +54,7 @@ const footer = (req, changes) => ({
   type: 'context',
   elements: [
     ...(changes.length ? [{ type: 'mrkdwn', text: `✏️ Changed as the bot: ${tally(changes)}` }] : []),
-    { type: 'mrkdwn', text: `📦 Ran in an isolated <https://boxlite.ai|BoxLite> microVM · ${req.isDM ? 'reply in this thread' : 'mention me in this thread'} to follow up` },
+    { type: 'mrkdwn', text: `📦 Ran in an isolated <https://boxlite.ai|BoxLite> microVM · reply in this thread to follow up` },
   ],
 })
 

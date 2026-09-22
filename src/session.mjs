@@ -124,7 +124,8 @@ export function stderrGist(stderr) {
  * (box/session.mjs, prgrant.mjs).
  * @returns {{ sessionId, message, error, sessionLost, push }}.
  */
-export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, prs = false, log = () => {} }) {
+export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, prs = false, signal, log = () => {} }) {
+  signal?.throwIfAborted()
   const side = sideOf(key, cfg, { slack })
   const name = boxName(key, { slack, label })
   const boxCfg = { ...cfg, volume: side.volume } // its own side's volume, and only that one
@@ -149,10 +150,17 @@ export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = []
   const start = async () => {
     const box = await ensureBox(bl, name, boxCfg)
     const boxId = box.id || box.name
-    // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
-    // race the attach handshake (seen live).
-    if (!/running/i.test(String(box.status ?? box.state ?? ''))) await bl.startBox(boxId).catch((e) => log(`start ${boxId}: ${e.message}`))
-    return { boxId, ...(await bl.startExec(boxId, exec)) }
+    try {
+      signal?.throwIfAborted()
+      // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
+      // race the attach handshake (seen live).
+      if (!/running/i.test(String(box.status ?? box.state ?? ''))) await bl.startBox(boxId).catch((e) => log(`start ${boxId}: ${e.message}`))
+      signal?.throwIfAborted()
+      return { boxId, ...(await bl.startExec(boxId, exec)) }
+    } catch (e) {
+      if (signal?.aborted) await bl.stopBox(boxId).catch((err) => log(`stop ${boxId}: ${err.message}`))
+      throw e
+    }
   }
   // A stopped box is deleted once its thread has been quiet a while (auto_delete): one found just
   // before it went is gone by the exec, a 404 — then the thread gets a new box, once.
@@ -166,8 +174,12 @@ export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = []
   let result = null
   let pending = ''
   let stderr = ''
+  const abort = () => { void bl.killExec(boxId, execId).catch((e) => log(`cancel ${execId}: ${e.message}`)) }
+  signal?.addEventListener('abort', abort, { once: true })
   try {
+    if (signal?.aborted) { abort(); signal.throwIfAborted() }
     await bl.attach(boxId, execId, {
+      signal,
       stdin: JSON.stringify({ prompt, files: files.map(({ path, data }) => ({ path, data })) }),
       timeoutMs: cfg.jobTimeoutMs + 120_000,
       onStdout: (chunk) => {
@@ -185,6 +197,7 @@ export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = []
       },
     })
   } finally {
+    signal?.removeEventListener('abort', abort)
     await bl.stopBox(boxId).catch((e) => log(`stop ${boxId}: ${e.message}`))
   }
 

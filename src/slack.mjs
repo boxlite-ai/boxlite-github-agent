@@ -11,14 +11,16 @@ export function slack(token, { fetchImpl = fetch, sleep = (ms) => new Promise((r
   const auth = { Authorization: `Bearer ${token}`, 'User-Agent': 'boxlite-github-agent' }
 
   /** One Web API method. Throws `slack <method>: <error>`, with Slack's error string as `.code`. */
-  async function call(method, params = {}) {
+  async function call(method, params = {}, { check = () => {} } = {}) {
     const form = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.set(k, typeof v === 'string' ? v : JSON.stringify(v))
     for (let attempt = 1; ; attempt++) {
+      check() // a stopped agent must not retry a write after a rate-limit backoff
       const res = await fetchImpl(`${API}/${method}`, {
         method: 'POST',
         headers: { ...auth, 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
         body: form.toString(),
+        signal: AbortSignal.timeout(30_000),
       })
       if (res.status === 429) {
         const wait = Number(res.headers.get('retry-after')) || 1

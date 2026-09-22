@@ -61,7 +61,7 @@ test('reply: markdown blocks in the request’s thread, the footer under the las
   }
   assert.equal(sk.calls[0].blocks.length, 1)
   assert.equal(sk.calls[1].blocks[1].type, 'context')
-  assert.match(sk.calls[1].blocks[1].elements[0].text, /BoxLite.*mention me in this thread/)
+  assert.match(sk.calls[1].blocks[1].elements[0].text, /BoxLite.*reply in this thread/)
   const dm = fakeSlack()
   await reply(dm, { ...req, isDM: true }, '')
   assert.equal(dm.calls[0].blocks[0].text, '(no answer)')
