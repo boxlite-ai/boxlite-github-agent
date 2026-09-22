@@ -19,7 +19,7 @@
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
 //   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, CODEX_EFFORT (both until an admin's
 //   /model), MAX_CONCURRENT (3),
-//   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_TTL_DAYS (3),
+//   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_DELETE_SEC (15),
 //   STATE_FILE (/var/lib/botlite/state.json; its directory is the state dir).
 import { execFileSync } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
@@ -69,7 +69,7 @@ const cfg = {
   maxConcurrent: Number(env.MAX_CONCURRENT || 3),
   dailyLimit: Number(env.DAILY_LIMIT_PER_USER || 20),
   jobTimeoutMs: Number(env.JOB_TIMEOUT_MIN || 20) * 60_000,
-  boxTtlSec: Number(env.BOX_TTL_DAYS || 3) * 86_400,
+  boxDeleteSec: Number(env.BOX_DELETE_SEC || 15),
   stateFile: env.STATE_FILE || '/var/lib/botlite/state.json',
 }
 if (!cfg.boxliteKey) throw new Error('missing env BOXLITE_API_KEY or BOXLITE_SECRET_BOXLITE')

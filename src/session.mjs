@@ -5,7 +5,7 @@
 // left running and stops the meter; the next exec starts it again.
 import { createHash, createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { codexArgs, applyEvent, newRun, CODEX_VERSION } from './codex.mjs'
+import { codexArgs, codexConfig, applyEvent, newRun, CODEX_VERSION } from './codex.mjs'
 
 const RUNNER = readFileSync(new URL('../box/session.mjs', import.meta.url), 'utf8')
 const VOLUME_PATH = '/vol'
@@ -27,8 +27,11 @@ export function boxSpec(name, cfg) {
     network: { mode: 'enabled' }, // outbound only: the box is never reachable from outside
     volumes: [{ managed_volume: cfg.volume, guest_path: VOLUME_PATH }],
     // No secrets at all: the model is reached through the controller with a per-job token.
-    auto_stop: 900, // safety net; the controller stops the box after every turn
-    auto_delete: cfg.boxTtlSec, // a quiet thread's box goes; its context stays on the volume
+    // BoxLite's lifecycle is in seconds, 0 = off. The controller stops the box after every turn,
+    // and a turn can outlast any idle window, so no auto-stop; a stopped box is deleted soon after
+    // (BOX_DELETE_SEC), since its context is sealed on the volume and restores into a new one.
+    auto_stop: 0,
+    auto_delete: cfg.boxDeleteSec,
   }
 }
 
@@ -58,13 +61,8 @@ export async function ensureBox(bl, name, cfg) {
  * branch, through the controller. @returns {{ sessionId, message, error, sessionLost, push }}.
  */
 export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write, log = () => {} }) {
-  const box = await ensureBox(bl, boxName(key), cfg)
-  const boxId = box.id || box.name
-  // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
-  // race the attach handshake (seen live).
-  if (!/running/i.test(String(box.status ?? box.state ?? ''))) await bl.startBox(boxId).catch((e) => log(`start ${boxId}: ${e.message}`))
   const args = codexArgs({ sessionId, cwd: `${CTX}/repo`, outFile: `${CTX}/last-message.md`, proxyUrl, model: cfg.model, effort: cfg.effort })
-  const { execution_id: execId } = await bl.startExec(boxId, {
+  const exec = {
     command: 'node',
     args: ['--input-type=module', '-e', RUNNER],
     env: {
@@ -78,10 +76,26 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobTok
       BASE_REF: pr?.baseRef ?? '',
       CODEX_VERSION,
       BOTLITE_ARGS: JSON.stringify(args),
+      CODEX_CONFIG: JSON.stringify(codexConfig(proxyUrl)),
       BOTLITE_JOB_TOKEN: jobToken,
       ...(write ? { BASE_SHA: write.base, BASE_URL: write.baseUrl, PUSH_URL: `${proxyUrl}/git`, PUSH_REF: `refs/heads/${write.staging}` } : {}),
     },
     timeout_seconds: Math.ceil(cfg.jobTimeoutMs / 1000),
+  }
+  const start = async () => {
+    const box = await ensureBox(bl, boxName(key), cfg)
+    const boxId = box.id || box.name
+    // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
+    // race the attach handshake (seen live).
+    if (!/running/i.test(String(box.status ?? box.state ?? ''))) await bl.startBox(boxId).catch((e) => log(`start ${boxId}: ${e.message}`))
+    return { boxId, ...(await bl.startExec(boxId, exec)) }
+  }
+  // A stopped box is deleted seconds later (auto_delete): one found just before it went is gone by
+  // the exec, a 404 — then the thread gets a new box, once.
+  const { boxId, execution_id: execId } = await start().catch((e) => {
+    if (e.status !== 404) throw e
+    log(`${boxName(key)} went as it was reused: a new one`)
+    return start()
   })
 
   const run = newRun()

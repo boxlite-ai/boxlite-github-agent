@@ -17,10 +17,9 @@ export const CODEX_VERSION = '0.155.1'
  * `effort` is the model's reasoning effort (low … xhigh, max, ultra — whatever the model offers).
  */
 export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model, effort }) {
-  if (!/^https?:\/\/[^\s"'\\]+$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
   if (effort && !/^[a-z]+$/.test(effort)) throw new Error(`bad reasoning effort: ${effort}`)
   if (model && !/^[\w.:-]+$/.test(model)) throw new Error(`bad model: ${model}`)
-  const origin = proxyUrl.replace(/\/+$/, '')
+  const origin = proxyOrigin(proxyUrl)
   const opts = [
     '--json',
     '-o', outFile,
@@ -41,6 +40,26 @@ export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model, effort }) 
     ...(model ? ['-m', model] : []),
   ]
   return sessionId ? ['exec', 'resume', ...opts, sessionId, '-'] : ['exec', ...opts, '-C', cwd, '-']
+}
+
+const proxyOrigin = (proxyUrl) => {
+  if (!/^https?:\/\/[^\s"'\\]+$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
+  return proxyUrl.replace(/\/+$/, '')
+}
+
+/**
+ * The same routing for $CODEX_HOME/config.toml, which every codex in the box reads: codexArgs'
+ * flags reach only the one we start, and agent-tooling's hooks start their own — seen live going
+ * to chatgpt.com with the job token (a 401, then a refresh that can't work). Two parts, because
+ * TOML wants top-level keys before any table: the runner puts `top` first and `table` last, around
+ * what agent-tooling keeps in that file (box/session.mjs).
+ */
+export function codexConfig(proxyUrl) {
+  const origin = proxyOrigin(proxyUrl)
+  return {
+    top: ['model_provider = "botlite"', `chatgpt_base_url = "${origin}/backend-api/"`, 'cli_auth_credentials_store = "file"'].join('\n'),
+    table: ['[model_providers.botlite]', 'name = "botlite"', `base_url = "${origin}/backend-api/codex"`, 'wire_api = "responses"', 'requires_openai_auth = true'].join('\n'),
+  }
 }
 
 /**

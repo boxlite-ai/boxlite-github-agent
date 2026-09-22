@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { branchesFor, checkChange, describeChange, treeEntries, planWrite, publishWrite, LIMITS } from '../src/publish.mjs'
+import { branchesFor, checkChange, describeChange, treeEntries, planWrite, publishWrite, pushFailure, LIMITS } from '../src/publish.mjs'
 
 const BASE = 'b'.repeat(40)
 const TIP = 't'.repeat(40)
@@ -31,6 +31,17 @@ const fakeApp = () => {
   app.revoke = async (t) => app.revoked.push(t)
   return app
 }
+
+test('pushFailure: the reason from git’s output, never the output itself — it names the controller', () => {
+  // Seen live on boxlite-ai/boxlite#1589: upstream had changed a workflow the bot's fork lacked.
+  const workflow = `To https://8788-d-abc.proxy.boxlite.ai/git
+ ! [remote rejected]   HEAD -> botlite-staging/boxlite-ai/boxlite/1589 (refusing to allow a GitHub App to create or update workflow \`.github/workflows/README.md\` without \`workflows\` permission)
+error: failed to push some refs to 'https://8788-d-abc.proxy.boxlite.ai/git'`
+  assert.equal(pushFailure(workflow), "GitHub refused my push because it touches the workflow `.github/workflows/README.md`, which I may not write. If that's upstream's change my fork hasn't caught up with, the bot's operator can fix it: give the bot's GitHub token the `workflow` scope")
+  assert.equal(pushFailure(' ! [remote rejected] HEAD -> x (pre-receive hook declined)\nerror: failed to push some refs to \'https://h.example/git\''), 'GitHub refused my push (pre-receive hook declined)')
+  assert.equal(pushFailure('fatal: unable to access \'https://h.example/git/\': Could not resolve host'), "my push failed (fatal: unable to access '… Could not resolve host)")
+  for (const out of [workflow, 'error: RPC failed; HTTP 502 curl 22 https://h.example/git']) assert.doesNotMatch(pushFailure(out), /https?:\/\//)
+})
 
 test('branchesFor: readable, one per thread, valid ref names even for .github or x.lock repos', () => {
   assert.deepEqual(branchesFor('acme/app#7'), { branch: 'botlite/acme/app/7', staging: 'botlite-staging/acme/app/7' })
@@ -255,7 +266,7 @@ test('publishWrite: nothing pushed — silence, or a word when changes were left
   const failed = await pushedTurn({ files: [] })
   failed.gh.calls.length = 0
   const gh = fakeGithub([['DELETE', /./, null]])
-  assert.equal(await publishWrite({ gh, app: failed.app, me, plan: failed.plan, req, result: { pushed: null, error: 'HTTP 403' } }), '⚠️ Nothing was published: the push failed (HTTP 403).')
+  assert.equal(await publishWrite({ gh, app: failed.app, me, plan: failed.plan, req, result: { pushed: null, error: 'HTTP 403' } }), '⚠️ Nothing was published: my push failed (HTTP 403).')
   const broken = { ...failed.plan, opened: Promise.reject(new Error("the push App isn't installed on @botlite")) }
   assert.equal(await publishWrite({ gh, app: fakeApp(), me, plan: broken, req, result: null }), "⚠️ Couldn't set up the PR branch: the push App isn't installed on @botlite")
 })

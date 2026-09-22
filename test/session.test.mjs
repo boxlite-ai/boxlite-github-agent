@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { boxName, snapshotPath, contextKey, boxSpec, ensureBox, runTurn } from '../src/session.mjs'
 
 const cfg = {
-  image: 'node', cpus: 2, memoryMib: 4096, volume: 'botlite-context', boxTtlSec: 259200,
+  image: 'node', cpus: 2, memoryMib: 4096, volume: 'botlite-context', boxDeleteSec: 15,
   contextSecret: 'master', jobTimeoutMs: 60_000, model: undefined,
 }
 const req = { repo: 'acme/app', number: 7, isPR: true }
@@ -23,7 +23,10 @@ test('boxSpec: shared volume, no credentials of any kind, private, self-cleaning
   assert.deepEqual(spec.volumes, [{ managed_volume: 'botlite-context', guest_path: '/vol' }])
   assert.equal('secrets' in spec, false) // the model is reached through the controller
   assert.deepEqual(spec.network, { mode: 'enabled' })
-  assert.equal(spec.auto_delete, 259200)
+  // BoxLite counts seconds, 0 = off: the controller stops the box itself, and a stopped box goes
+  // 15 s later (its context is on the volume). A set auto_delete must exceed auto_stop, or it's a 400.
+  assert.equal(spec.auto_stop, 0)
+  assert.equal(spec.auto_delete, 15)
   assert.equal('env' in spec, false) // nothing sensitive in plaintext box env
   assert.equal('auto_remove' in spec, false) // rejected (400) by the current API
 })
@@ -113,6 +116,25 @@ test('runTurn: a resume whose session is gone is reported as sessionLost', async
   assert.equal(out.sessionLost, true)
   assert.equal(out.message, null)
   assert.match(out.error, /no answer \(exit 1\)/)
+})
+
+test('runTurn: a box deleted as it was reused (auto_delete, seconds after a stop) is made anew, once', async () => {
+  let gone = true
+  const bl = fakeBoxlite({
+    getBox: async () => (gone ? { id: 'box-old', status: 'stopped' } : null),
+    startExec: async (id) => {
+      if (id === 'box-old') {
+        gone = false // the next lookup no longer finds it
+        throw Object.assign(new Error('boxlite POST /v1/boxes/box-old/exec → 404'), { status: 404 })
+      }
+      return { execution_id: 'ex-2' }
+    },
+    attach: async (id, execId, { onStdout }) => (onStdout(Buffer.from(lines({ type: 'botlite.result', code: 0, lastMessage: 'ok' }))), 0),
+  })
+  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, pr: null, prompt: 'P', ...via })
+  assert.equal(out.message, 'ok')
+  assert.deepEqual(bl.calls.filter((c) => c[0] === 'createBox').map((c) => c[1].name), [boxName('acme/app#7')])
+  assert.equal(bl.calls.find((c) => c[0] === 'stopBox')[1], 'box-1') // the new box is the one stopped
 })
 
 test('runTurn: starts a stopped box before the exec; leaves a running one alone', async () => {

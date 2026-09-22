@@ -13,11 +13,25 @@ export function react(gh, req, content = 'eyes') {
   return gh.json('POST', path, { body: { content } })
 }
 
-/** `footer: false` for the controller's own replies (commands), where nothing ran in a box. */
-export function reply(gh, req, text, { footer = true } = {}) {
+/**
+ * `footer: false` for the controller's own replies (commands), where nothing ran in a box. GitHub
+ * sometimes answers 5xx for a comment it did create (seen live, followed by a second reply saying
+ * something went wrong): on a 5xx it looks for the comment before posting it again.
+ */
+export async function reply(gh, req, text, { footer = true, retryDelayMs = 2000 } = {}) {
   const t = String(text || '').trim() || '(no answer)'
   const body = (t.length > MAX_BODY ? `${t.slice(0, MAX_BODY)}\n\n…(truncated)` : t) + (footer ? FOOTER : '')
-  return req.kind === 'review_comment'
-    ? gh.json('POST', `/repos/${req.repo}/pulls/${req.number}/comments/${req.commentId}/replies`, { body: { body } })
-    : gh.json('POST', `/repos/${req.repo}/issues/${req.number}/comments`, { body: { body } })
+  const [post, list] =
+    req.kind === 'review_comment'
+      ? [`/repos/${req.repo}/pulls/${req.number}/comments/${req.commentId}/replies`, `/repos/${req.repo}/pulls/${req.number}/comments`]
+      : [`/repos/${req.repo}/issues/${req.number}/comments`, `/repos/${req.repo}/issues/${req.number}/comments`]
+  const since = new Date(Date.now() - 60_000).toISOString()
+  try {
+    return await gh.json('POST', post, { body: { body } })
+  } catch (e) {
+    if (!(e.status >= 500)) throw e
+    await new Promise((r) => setTimeout(r, retryDelayMs))
+    const posted = (await gh.json('GET', `${list}?since=${since}&per_page=100`)).find((c) => c.body === body)
+    return posted ?? gh.json('POST', post, { body: { body } })
+  }
 }
