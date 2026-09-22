@@ -174,6 +174,22 @@ test('runCommand /deploy: shows what goes live and records it; refuses nothing n
   for (const s of [none, rewritten, down, stranger]) assert.equal(s.deploy, null) // nothing recorded, nothing restarts
 })
 
+test('runCommand /deploy: the last deploy, already live on its trial, doesn’t block the next (found by the chaos run)', async () => {
+  const A = 'a'.repeat(40)
+  const C = 'c'.repeat(40)
+  const D = 'd'.repeat(40)
+  const onTrial = { from: A, to: C, by: 'root', live: true }
+  const state = { grants: {}, paused: null, deploy: onTrial }
+  const text = await runCommand({ name: 'deploy', arg: '' }, ctx(state, { deploy: async () => ({ from: C, to: D, status: 'ahead', commits: [{ sha: D, title: 'fix: three' }] }) }))
+  assert.match(text, /🚀 deploying `ccccccc` → `ddddddd`, 1 commit/)
+  assert.notEqual(state.deploy, onTrial) // a new record: the controller restarts for it
+  assert.equal(state.deploy.to, D)
+  // With nothing new, the one on trial stays as it was — and the same record means no restart.
+  const quiet = { grants: {}, paused: null, deploy: onTrial }
+  assert.match(await runCommand({ name: 'deploy', arg: '' }, ctx(quiet, { deploy: async () => ({ from: C, to: C, status: 'identical', commits: [] }) })), /already running `ccccccc`/)
+  assert.equal(quiet.deploy, onTrial)
+})
+
 test('runCommand /add: two at once on a repo with no grants yet both stick', async () => {
   const state = { grants: {}, paused: null }
   let release
