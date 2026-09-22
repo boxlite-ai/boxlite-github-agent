@@ -3,10 +3,14 @@
 // Codex session, per-user daily usage, the notifications cursor, who an admin let ask for PRs
 // where, whether PR writing is paused, the bot's fork of each repo, and the model turns run on.
 // Small by design — written atomically after every change, so a crash never loses or tears it.
+// Fields this build doesn't know are kept as they are: a build rolled back to, or one from before
+// a field existed, must not drop what a newer one saved (seen live: a restart onto old code
+// dropped the /model setting).
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 
 const MAX_SEEN = 10_000 // comment ids to remember; older ones are far outside any re-read window
+const KNOWN = ['lastModified', 'seen', 'threads', 'usage', 'grants', 'paused', 'forks', 'codex', 'deploy']
 
 export async function loadState(file) {
   let raw = {}
@@ -15,7 +19,9 @@ export async function loadState(file) {
   } catch (e) {
     if (e.code !== 'ENOENT') throw e
   }
+  const unknown = Object.fromEntries(Object.entries(raw).filter(([k]) => !KNOWN.includes(k)))
   return {
+    unknown, // written back untouched
     lastModified: raw.lastModified ?? null,
     seen: new Set(raw.seen ?? []),
     threads: raw.threads ?? {}, // "owner/repo#n" → { user, sessionId, headSha, lastUsed }
@@ -32,7 +38,7 @@ export async function saveState(file, state) {
   const seen = [...state.seen].slice(-MAX_SEEN)
   state.seen = new Set(seen)
   const { lastModified, threads, usage, grants, paused, forks, codex, deploy } = state
-  const data = JSON.stringify({ lastModified, seen, threads, usage, grants, paused, forks, codex, deploy })
+  const data = JSON.stringify({ ...state.unknown, lastModified, seen, threads, usage, grants, paused, forks, codex, deploy })
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, data, { mode: 0o600 })

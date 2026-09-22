@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scheduler } from '../src/jobs.mjs'
 import { loadState, saveState, takeQuota, quotaLeft } from '../src/state.mjs'
-import { mkdtempSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -37,7 +37,7 @@ test('scheduler: at most `max` jobs at once across threads', async () => {
 test('state: defaults when missing, round-trips, owner-only file', async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state', 'state.json')
   const s = await loadState(file)
-  assert.deepEqual({ ...s, seen: [...s.seen] }, { lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null })
+  assert.deepEqual({ ...s, seen: [...s.seen] }, { unknown: {}, lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null })
   s.seen.add('ic:1')
   s.threads['acme/app#7'] = { sessionId: 's1', boxId: 'b1' }
   s.lastModified = 'T1'
@@ -52,6 +52,17 @@ test('state: defaults when missing, round-trips, owner-only file', async () => {
   assert.deepEqual(again.threads, { 'acme/app#7': { sessionId: 's1', boxId: 'b1' } })
   assert.deepEqual([again.grants, again.paused, again.forks, again.codex, again.deploy], [s.grants, s.paused, s.forks, s.codex, s.deploy])
   assert.equal(statSync(file).mode & 0o777, 0o600)
+})
+
+test('state: fields this build doesn’t know survive a load and save — a rollback never drops a newer build’s settings', async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state.json')
+  writeFileSync(file, JSON.stringify({ seen: ['ic:1'], usage: {}, fromTheFuture: { keep: 'me' }, alsoNew: [1, 2] }))
+  const s = await loadState(file)
+  s.usage.bob = { day: 'D', count: 1 }
+  await saveState(file, s)
+  const raw = JSON.parse(readFileSync(file, 'utf8'))
+  assert.deepEqual([raw.fromTheFuture, raw.alsoNew, raw.usage.bob], [{ keep: 'me' }, [1, 2], { day: 'D', count: 1 }])
+  assert.equal('unknown' in raw, false)
 })
 
 test('state: remembers only the newest 10k handled comments', async () => {

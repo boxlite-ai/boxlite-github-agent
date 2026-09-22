@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="640" viewBox="0 0 760 640" role="img" aria-labelledby="t">
-  <title id="t">The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. Live, it's marked good and says so in the thread; a build that fails to start three times is rolled back to the last good one, and the thread is told.</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="656" viewBox="0 0 760 656" role="img" aria-labelledby="t">
+  <title id="t">The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull is checked before it starts (it must parse, pass the launcher's test and start offline): if it doesn't pass, the controller runs the newest pulled commit that does, or the build it had. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.</title>
   <style>
     :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
     @media (prefers-color-scheme: dark) {
@@ -30,7 +30,7 @@
     <marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-green" d="M0,0 L10,5 L0,10 z"/></marker>
     <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-amber" d="M0,0 L10,5 L0,10 z"/></marker>
   </defs>
-  <rect class="frame" x="0.5" y="0.5" width="759" height="639" rx="12"/>
+  <rect class="frame" x="0.5" y="0.5" width="759" height="655" rx="12"/>
 
   <!-- lanes -->
   <rect class="ext" x="12" y="16" width="136" height="36" rx="8"/>
@@ -41,10 +41,10 @@
   <text class="title" x="480" y="39" text-anchor="middle">launcher</text>
   <rect class="ext" x="612" y="16" width="136" height="36" rx="8"/>
   <text class="title" x="680" y="39" text-anchor="middle">main</text>
-  <line class="life" x1="80" y1="52" x2="80" y2="628"/>
-  <line class="life" x1="280" y1="52" x2="280" y2="628"/>
-  <line class="life" x1="480" y1="52" x2="480" y2="628"/>
-  <line class="life" x1="680" y1="52" x2="680" y2="628"/>
+  <line class="life" x1="80" y1="52" x2="80" y2="644"/>
+  <line class="life" x1="280" y1="52" x2="280" y2="644"/>
+  <line class="life" x1="480" y1="52" x2="480" y2="644"/>
+  <line class="life" x1="680" y1="52" x2="680" y2="644"/>
 
   <!-- 1 ask for a change to the bot itself -->
   <rect class="bubble" x="6" y="68" width="148" height="44" rx="7"/>
@@ -77,13 +77,14 @@
   <!-- 6 the boot loop pulls main, the launcher starts it -->
   <line class="back" x1="680" y1="440" x2="482" y2="440" marker-end="url(#ah)"/>
   <text class="small" x="580" y="432" text-anchor="middle">boot loop pulls main</text>
-  <rect class="card" x="392" y="460" width="176" height="34" rx="7"/>
-  <text x="480" y="482" text-anchor="middle">start new build</text>
+  <text class="small muted" x="580" y="458" text-anchor="middle">newest commit that passes</text>
+  <rect class="card" x="392" y="476" width="176" height="34" rx="7"/>
+  <text x="480" y="498" text-anchor="middle">start new build</text>
 
   <!-- 7 live, or rolled back -->
-  <line class="good" x1="480" y1="530" x2="82" y2="530" marker-end="url(#ah-green)"/>
-  <text class="small ok" x="280" y="522" text-anchor="middle">✅ live · marked good</text>
-  <line class="bad" x1="480" y1="590" x2="82" y2="590" marker-end="url(#ah-amber)"/>
-  <text class="small amber" x="280" y="582" text-anchor="middle">⚠️ fails 3× · rolled back</text>
-  <text class="small muted" x="280" y="606" text-anchor="middle">to the last good build</text>
+  <line class="good" x1="480" y1="546" x2="82" y2="546" marker-end="url(#ah-green)"/>
+  <text class="small ok" x="280" y="538" text-anchor="middle">✅ live · 10-minute trial</text>
+  <line class="bad" x1="480" y1="606" x2="82" y2="606" marker-end="url(#ah-amber)"/>
+  <text class="small amber" x="280" y="598" text-anchor="middle">⚠️ fails 3× in its trial</text>
+  <text class="small muted" x="280" y="622" text-anchor="middle">rolled back to the last good build</text>
 </svg>

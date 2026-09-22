@@ -81,10 +81,22 @@ there. People are kept by GitHub id, since a login can change hands.
 
 ### Improving itself
 
-![The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. Live, it's marked good and says so in the thread; a build that fails to start three times is rolled back to the last good one, and the thread is told.](docs/deploy.svg)
+![The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull is checked before it starts (it must parse, pass the launcher's test and start offline): if it doesn't pass, the controller runs the newest pulled commit that does, or the build it had. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.](docs/deploy.svg)
 
 A bot PR that touches its own trust boundary (access, publishing, the push route, credentials, the
 runner, deploy) opens with a warning.
+
+### When a deploy goes wrong
+
+| If the new build… | then |
+|---|---|
+| doesn't parse, link or start, or breaks the launcher | the pull gate, a hook no pull can change, walks back to the newest pulled commit that passes (or the build it had), which starts and says why in the thread |
+| passes the gate, but fails 3× in its first 10 minutes | the launcher rolls back to the last good build, and the thread is told |
+| hangs: up, but not polling | `/healthz` answers 503; the **health** workflow opens an issue, and closes it once it's back |
+| misbehaves some other way | the **deploy** workflow's `rollback` runs an earlier commit of main |
+
+A rollback keeps what a newer build wrote to the state: fields an older build doesn't know are kept,
+not dropped.
 
 ## Who holds what
 
@@ -121,6 +133,8 @@ fenced as untrusted context, never as instructions.
 | `src/github.mjs` · `reply.mjs` | controller | GitHub REST as the bot: 👀 and replies |
 | `box/session.mjs` | session box | restore → stand-in login → checkout → Codex → push commits → seal |
 | `deploy/deploy.sh` · `ctl.mjs` | your terminal | create the controller; operate it |
+| `deploy/post-merge.sh` | controller | the pull gate: a pull runs only up to its newest commit that passes |
+| `.github/workflows/` | GitHub Actions | `test` every PR; `deploy` from the `production` environment; `health` |
 
 ## Run your own
 
@@ -147,9 +161,28 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
 - **`CONTEXT_SECRET`** seals contexts and signs job tokens. It's generated on first start. Pass the
   same value to a redeploy (`CONTEXT_SECRET=… bash deploy/deploy.sh`) to keep every thread's context.
 
-Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart | admins <logins>`.
-`restart` pulls the tracked branch and lets running turns finish first; `admins` replaces
-`BOT_ADMINS` and restarts, with no redeploy.
+Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart | rollback <commit> | admins <logins>`.
+`restart` pulls the tracked branch and lets running turns finish first; `rollback` runs an earlier
+commit of it until the next restart; `admins` replaces `BOT_ADMINS` and restarts, with no redeploy.
+Add `--wait` to any of the three to wait until the next start is live and see which build it is.
+
+### From GitHub
+
+Keep the keys in the repo's `production` environment instead of on a laptop: secrets
+`BOXLITE_API_KEY`, `BOT_GITHUB_TOKEN` and `PUSH_APP_PRIVATE_KEY`, variables `PUSH_APP_ID` and
+`BOT_ADMINS`, with a required reviewer and only `main` allowed to deploy. Then the **deploy**
+workflow operates the controller:
+
+| Action | Does |
+|---|---|
+| `restart` | pull main and restart onto it |
+| `handover` | give the controller its tokens and keys from the environment, e.g. after a rotation |
+| `rollback` | run an earlier commit of main until the next restart or `/deploy` |
+
+Each run waits until that build is live, and fails with how its start went if it isn't. **health**
+checks `/healthz` every 15 minutes once the `CONTROLLER_URL` variable is set. **test** runs
+`npm test` on every PR. The ChatGPT login stays in the controller: its refresh token changes as it
+is used, so a copy would go stale.
 
 <details>
 <summary>Settings</summary>

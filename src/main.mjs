@@ -1,11 +1,12 @@
 // The entry the controller box's boot loop runs after every `git pull` (deploy/deploy.sh): a small
 // launcher that keeps a bad build from crash-looping the bot, then runs the controller itself.
 //
-// It counts starts of the checked-out commit; the controller marks its commit good once it's live
-// (controller.mjs). A commit that fails to go live three times in a row is rolled back to the last
-// good one, detached — so the boot loop's `git pull --ff-only` leaves it alone until the next
-// `/deploy` or `ctl restart` re-attaches the branch. Keep this file small and dependency-free: it
-// is what still runs when the rest of a build is broken.
+// It counts starts of the checked-out commit; the controller marks its commit good once it has been
+// live for its trial, and a clean restart resets the count (controller.mjs). A commit that fails
+// three times before its trial is up is rolled back to the last good one, detached — so the boot
+// loop's `git pull --ff-only` leaves it alone until the next `/deploy` or `ctl restart` re-attaches
+// the branch. Keep this file small and dependency-free: it is what still runs when the rest of a
+// build is broken. (A build that breaks this file is stopped before it starts: deploy/post-merge.sh.)
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'

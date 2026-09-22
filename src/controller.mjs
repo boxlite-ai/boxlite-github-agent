@@ -39,7 +39,7 @@ import { gitPushHandler } from './gitpush.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
 import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
 import { planWrite, publishWrite } from './publish.mjs'
-import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome, recordedBranch, recordBranch } from './deploy.mjs'
+import { selfBuild, deployPlan, markGood, cleanExit, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 
@@ -132,7 +132,14 @@ const webhook = webhookHandler({
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
 const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git })
+// /healthz is healthy while polling works: a controller that's up but stuck is caught too (the
+// health workflow checks it). Before the first poll it counts from the start.
+let lastPoll = Date.now()
+const health = () => {
+  const quiet = Date.now() - lastPoll
+  return quiet < 10 * 60_000 ? { ok: true } : { ok: false, why: `no successful poll for ${Math.floor(quiet / 60_000)} minutes` }
+}
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, health })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -399,6 +406,7 @@ process.on('SIGTERM', async () => {
   log(`SIGTERM: finishing ${inflight} running turn(s) before exiting`)
   for (let waited = 0; inflight > 0 && waited < cfg.jobTimeoutMs + 120_000; waited += 1000) await sleep(1000)
   await persist()
+  if (build.commit) cleanExit(stateDir, build.commit) // a restart, not a failure: the launcher counts crashes only
   process.exit(0)
 })
 
@@ -406,22 +414,33 @@ await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${
 onRequest = accept
 await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}, codex ${CODEX_VERSION}, build ${build.commit?.slice(0, 7) ?? '?'}`)
 
-// Live, so this build is good (the launcher won't roll back past it); then report how the last
-// /deploy went, in the thread that asked for it.
-if (build.commit) markGood(stateDir, build.commit)
+// Report how the last /deploy went, in the thread that asked; a deploy stays pending through the
+// new build's trial, and the build is good (the launcher won't roll back past it) once it's over.
 const rollback = takeRollback(stateDir)
-if (rollback) await status(`rolled back from ${rollback.from.slice(0, 7)} to ${rollback.to.slice(0, 7)} at ${rollback.at}: it failed to go live three times`, 'deploy')
-const outcome = deployOutcome({ pending: state.deploy, running: build.commit, rollback })
+if (rollback) await status(`rolled back from ${rollback.from.slice(0, 7)} to ${rollback.to.slice(0, 7)} at ${rollback.at}: ${rollback.why ?? 'it kept failing in its trial'}`, 'deploy')
+const deploying = state.deploy
+const outcome = deployOutcome({ pending: deploying, running: build.commit, rollback })
 if (outcome) {
   log(`deploy: ${outcome}`)
-  await reply(gh, state.deploy.reply, outcome, { footer: false }).catch((e) => log(`deploy: couldn't report back: ${e.message}`))
-  state.deploy = null
+  await reply(gh, deploying.reply, outcome, { footer: false }).catch((e) => log(`deploy: couldn't report back: ${e.message}`))
+}
+if (deploying) {
+  state.deploy = pendingAfter({ pending: deploying, running: build.commit, rollback })
   await persist()
 }
+setTimeout(async () => {
+  if (build.commit) markGood(stateDir, build.commit)
+  if (state.deploy?.live && state.deploy.to === build.commit) {
+    state.deploy = null
+    await persist()
+  }
+  log(`build ${build.commit?.slice(0, 7)} passed its trial`)
+}, TRIAL_MS)
 for (;;) {
   let interval = 60
   try {
     interval = await tick()
+    lastPoll = Date.now()
   } catch (e) {
     log(`poll: ${e.message}`)
   }
