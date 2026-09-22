@@ -29,7 +29,7 @@ function commit(controller, message) {
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message)
   return git('rev-parse', 'HEAD')
 }
-const start = () => spawnSync(process.execPath, [path.join(repo, 'src', 'main.mjs')], { encoding: 'utf8', env: { PATH: process.env.PATH, STATE_FILE: path.join(stateDir, 'state.json') } })
+const start = (env = {}) => spawnSync(process.execPath, [path.join(repo, 'src', 'main.mjs')], { encoding: 'utf8', timeout: 30_000, env: { PATH: process.env.PATH, STATE_FILE: path.join(stateDir, 'state.json'), ...env } })
 
 test('launcher: a build that never goes live is rolled back to the last good one after three tries', () => {
   mkdirSync(path.join(repo, 'src'), { recursive: true })
@@ -49,10 +49,10 @@ test('launcher: a build that never goes live is rolled back to the last good one
   }
   const rolled = start()
   assert.equal(rolled.status, 1)
-  assert.match(rolled.stderr, new RegExp(`build ${bad.slice(0, 7)} failed to go live 3 times: rolled back to ${good.slice(0, 7)}`))
+  assert.match(rolled.stderr, new RegExp(`build ${bad.slice(0, 7)} failed 3 times before its trial was up: rolled back to ${good.slice(0, 7)}`))
   assert.equal(git('rev-parse', 'HEAD'), good)
   assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD'), 'HEAD') // detached: the boot loop's pull --ff-only won't move it
-  assert.deepEqual({ ...read('rollback.json'), at: undefined }, { from: bad, to: good, at: undefined })
+  assert.deepEqual({ ...read('rollback.json'), at: undefined }, { from: bad, to: good, at: undefined, by: 'launcher', why: 'failed 3 times before its trial was up' })
 
   const back = start() // the boot loop's next start: the good build again
   assert.equal(back.status, 0, back.stderr)
@@ -78,4 +78,24 @@ test('launcher: without a good build yet it never rolls back; its own trouble ne
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stdout, /controller ran/)
   assert.match(r.stderr, /launcher:/)
+})
+
+test('launcher: a controller that stops making progress is killed, and a build on trial is rolled back at once', () => {
+  rmSync(stateDir, { recursive: true, force: true })
+  const good = commit(LIVE, 'good again')
+  assert.equal(start().status, 0)
+  // Blocks its own event loop and never beats: only a watchdog on another thread can still act.
+  const hung = commit('for (;;) {}\n', 'hung')
+  const r = start({ HANG_MIN: '0.02' })
+  assert.equal(r.signal, 'SIGKILL', r.stderr)
+  assert.match(r.stderr, /launcher: the controller stopped making progress for \d+ seconds: killing it/)
+  assert.equal(read('boot.json').commit, hung)
+  assert.match(read('boot.json').failed, /^stopped making progress for \d+ seconds$/)
+
+  const rolled = start() // not three more tries: a hung start fails the trial at once
+  assert.equal(rolled.status, 1)
+  assert.match(rolled.stderr, new RegExp(`build ${hung.slice(0, 7)} stopped making progress for \\d+ seconds: rolled back to ${good.slice(0, 7)}`))
+  assert.equal(git('rev-parse', 'HEAD'), good)
+  assert.equal(read('rollback.json').by, 'launcher')
+  assert.equal(start().status, 0) // and the good build runs again
 })

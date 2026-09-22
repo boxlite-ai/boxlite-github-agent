@@ -91,8 +91,9 @@ runner, deploy) opens with a warning.
 | If the new build… | then |
 |---|---|
 | doesn't parse, link or start, or breaks the launcher | the pull gate, a hook no pull can change, walks back to the newest pulled commit that passes (or the build it had), which starts and says why in the thread |
-| passes the gate, but fails 3× in its first 10 minutes | the launcher rolls back to the last good build, and the thread is told |
-| hangs: up, but not polling | `/healthz` answers 503; the **health** workflow opens an issue, and closes it once it's back |
+| passes the gate, but crashes 3× in its first 10 minutes, or isn't polling at the end of them | the launcher rolls back to the last good build, and the thread is told |
+| hangs, stuck or with its event loop blocked | a watchdog thread kills it after 10 minutes without progress and the boot loop starts it again; a build still on trial is rolled back |
+| can't reach GitHub | `/healthz` answers 503; the **health** workflow opens an issue, and closes it once it's back |
 | misbehaves some other way | the **deploy** workflow's `rollback` runs an earlier commit of main |
 
 A rollback keeps what a newer build wrote to the state: fields an older build doesn't know are kept,
@@ -201,6 +202,7 @@ The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `C
 | `MAX_CONCURRENT` | `3` | turns running at once |
 | `DAILY_LIMIT_PER_USER` | `20` | requests per GitHub user per UTC day; the bot's admins have no limit |
 | `JOB_TIMEOUT_MIN` | `20` | wall-clock limit of one turn |
+| `HANG_MIN` | `10` | the watchdog kills a controller that makes no progress this long |
 | `BOX_TTL_DAYS` | `3` | a stopped session box is deleted after this |
 | `PORT` / `PUBLIC_URL` | `8788` / looked up | the proxy's port and public origin |
 | `BOXLITE_URL` | `https://api.boxlite.ai` | BoxLite API |
