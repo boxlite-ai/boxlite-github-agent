@@ -6,7 +6,8 @@ install on GitHub: it's a regular GitHub account. Each request runs
 [Codex CLI](https://github.com/openai/codex) in that thread's own [BoxLite](https://boxlite.ai)
 microVM, with a full shell and network, so it can run the code before it answers. Slack gets all of
 that too, draft PRs and the admin commands included. There it also gets the files attached to a
-message, and it can read your team's Linear, Notion and Google Workspace as its own accounts.
+message, and it can read your team's Linear, Notion and Google Workspace as its own accounts, and
+comment and file things in Linear and Notion.
 
 ```
 @boxliteai why does `npm test` fail on this PR?                        (GitHub)
@@ -71,7 +72,7 @@ team's conversations. So the two sides share nothing a box can reach:
 | Its volume | `botlite-context` (`VOLUME`) | `botlite-slack-context` (`SLACK_VOLUME`) |
 | Its context key comes from | `CONTEXT_SECRET` | `SLACK_CONTEXT_SECRET` |
 | The team's tools | only when one of the bot's admins asks | yes |
-| Who may ask for a PR | the bot's admins, the repo's maintainers, people an admin added | every member, into `boxlite-ai/*` (`SLACK_PR_REPOS`) |
+| Who may ask for a PR | the bot's admins, the repo's maintainers, people an admin added | every member, into any public repo (`SLACK_PR_REPOS`) |
 | Who runs the commands | the bot's admins (`BOT_ADMINS`) | the workspace's owners and admins |
 
 A GitHub box never mounts the volume where Slack's threads are kept. Nor the other way round:
@@ -90,10 +91,16 @@ shows only how the controller started, never a line about a thread.
 
 - **Who may ask:** the bot's admins (`BOT_ADMINS`) anywhere; a repo's maintainers (owner, member,
   collaborator) there; and anyone an admin added to a repo with `/add`.
-- **What's checked,** on GitHub's diff of the exact commit pushed: on top of the base, at most 100
-  files and 5,000 lines, no file over 1 MiB, no symlinks or submodules, and nothing under
-  `.github/workflows`, `.github/actions`, `CODEOWNERS`, `.gitmodules` or `FUNDING.yml`.
-  Dependency and lockfile changes pass, but are called out at the top of the PR.
+- **What's checked,** on GitHub's diff of the exact commit pushed: that it's a change on top of the
+  base, and nothing else. A human merges every PR, so nothing is refused for what it touches or
+  how big it is. Called out at the top of the PR: dependency and lockfile changes, and changes to
+  `.github/workflows`, `.github/actions`, `CODEOWNERS`, `.gitmodules` or `FUNDING.yml`. CI runs a
+  PR's own workflows before anyone has reviewed it, so require approval for outside
+  contributors' runs in a repo with self-hosted runners.
+- **Its fork runs no Actions.** Before a turn's first push, the controller turns Actions off on the
+  bot's fork: a push there would run the box's code with a token that can write the fork. If it
+  can't, nothing is pushed. The turn's push token may then carry workflow files, if the push App
+  may write them.
 - **What's published:** one commit by the bot on `botlite/<owner>/<repo>/<n>` in its fork, as a
   draft PR into the default branch. For someone else's PR, the draft PR goes into that PR's branch;
   on a PR the bot opened, the commit goes straight onto its branch. A follow-up adds a commit, and a
@@ -153,8 +160,8 @@ and a follow-up there (a mention again, in a channel) continues the same session
 screenshots or code to the message and the box gets them too: up to 5 MB a file and 8 MB a message.
 They reach that thread's box only, on the exec's stdin, and never go on a volume.
 
-**A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into a
-public repo `SLACK_PR_REPOS` in `src/policy.mjs` allows (`boxlite-ai/*` as shipped). A Slack thread
+**A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into any
+public repo (`SLACK_PR_REPOS` in `src/policy.mjs` can narrow that, to `boxlite-ai/*` say). A Slack thread
 belongs to no repo, so the PR is asked for at the end of the turn:
 
 1. Codex clones the repo in its working directory, commits the change there, and leaves `pr.json`
@@ -209,9 +216,11 @@ can read. So share with it only what everyone who can ask may see.
 The logins run on your machine and hand the tokens to the controller. Your machine keeps nothing.
 
 **What the bot may do** is `TOOLS` in `src/policy.mjs`: reads are listed, and every other call is
-refused before it reaches the service, whatever Codex asks. Changes stay off until you list them in
-`WRITES`. A change is made as the bot, for anyone who may ask, and can be prompted by anything
-written in the thread. The ones on offer:
+refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as
+shipped, comments and issues in Linear (`save_issue` edits issues too) and comments and new pages in
+Notion. Nothing deletes, moves, shares or overwrites, and nothing changes Google files. A change is
+made as the bot, for anyone who may ask, and can be prompted by anything written in the thread. The
+ones on offer:
 
 | Service | Change tools | Notes |
 |---|---|---|
@@ -300,12 +309,15 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
 
 - **BoxLite key:** it must be able to create boxes. If it can't create volumes, create
   `botlite-context` and `botlite-slack-context` in the dashboard first.
-- **GitHub token:** a *classic* PAT on the bot's own account with `notifications` + `public_repo`
-  + `workflow` (the notifications API rejects fine-grained tokens). `workflow` lets the bot's forks
-  catch up with an upstream that changed a workflow; without it, PRs from such a fork fail. Not
-  `repo`, which reaches private repos: the deploy refuses it. The bot is whoever the token belongs to.
+- **GitHub token:** a *classic* PAT on the bot's own account with `notifications` + `repo` +
+  `workflow` (the notifications API rejects fine-grained tokens). `workflow` lets the bot's forks
+  catch up with an upstream that changed a workflow; without it, PRs from such a fork fail. `repo`
+  lets the bot turn Actions off on its forks, which PR writing needs (with `public_repo` alone it
+  only answers). It also reaches private repos, so keep the bot's account out of them: the deploy
+  warns if it can see any. Never `delete_repo`. The bot is whoever the token belongs to.
 - **Push App (PR writing):** a GitHub App of its own, separate from the webhook App. Give it
-  *Repository permissions → Contents: Read and write* and nothing else, with no webhook. Install it
+  *Repository permissions → Contents: Read and write*, and *Workflows: Read and write* if its PRs
+  may change CI, with no webhook. Install it
   on the bot's account for *all repositories*, so new forks are covered, generate a private key,
   and hand both over with `ctl github-app`. Without it the bot only answers. The controller mints
   one token per write turn for that turn's fork, and the box never sees it.

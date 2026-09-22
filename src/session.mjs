@@ -104,6 +104,15 @@ export async function ensureBox(bl, name, cfg) {
 }
 
 /**
+ * What a failed run's stderr says went wrong, in one line: its last error (`Error: …`,
+ * `TypeError: …`), else its last words — never a stack, which would reach a public reply.
+ */
+export function stderrGist(stderr) {
+  const lines = String(stderr).split('\n').map((l) => l.trim()).filter((l) => l && l !== '^' && !/^at /.test(l) && !/^Node\.js v\d/.test(l))
+  return (lines.findLast((l) => /^[\w.$]*(Error|Exception)\b[^:\s]*:/.test(l)) ?? lines.at(-1) ?? '').slice(0, 300)
+}
+
+/**
  * Run one turn. `jobToken` is the box's stand-in ChatGPT login for this turn, `proxyUrl` the
  * controller's public origin. On a write turn `write` ({ base, baseUrl, staging }, publish.mjs)
  * puts the checkout on its base commit and has the runner push what Codex commits to the staging
@@ -183,7 +192,7 @@ export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = []
   const message = result?.lastMessage?.trim() || run.message
   const error = message
     ? null
-    : result?.setupError || run.error || result?.spawnError || `no answer (exit ${result?.code ?? '?'}): ${stderr.slice(-400)}`
+    : result?.setupError || run.error || result?.spawnError || `no answer (exit ${result?.code ?? '?'}): ${stderrGist(stderr)}`
   // Codex's exact words when the session to resume is gone (its snapshot was lost/rejected).
   const sessionLost = Boolean(sessionId) && !message && /no rollout found for thread id/.test(stderr)
   if (result?.tooling?.error) log(`${key}: agent-tooling not installed: ${result.tooling.error}`)

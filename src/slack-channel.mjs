@@ -15,7 +15,7 @@ import { slack } from './slack.mjs'
 import { socketMode } from './slack-socket.mjs'
 import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
 import { react, reply, say, whisper, tally } from './slack-reply.mjs'
-import { mayUseSlack, isSlackAdmin, slackPrAllowed } from './policy.mjs'
+import { mayUseSlack, isSlackAdmin, slackPrAllowed, prTargets } from './policy.mjs'
 import { parseCommand } from './access.mjs'
 import { pushFailure } from './publish.mjs'
 import { enabledServices } from './tools.mjs'
@@ -126,7 +126,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
   async function grantPr({ repo, base }, job, id) {
     const now = await prs.status()
     if (!now.ok) throw new Error(now.why)
-    if (!slackPrAllowed(repo, now.repos)) throw new Error(`I may open PRs only in ${now.repos.join(', ')}`)
+    if (!slackPrAllowed(repo, now.repos)) throw new Error(`I may open PRs only into ${prTargets(now.repos)}`)
     const plan = await prs.plan({ repo, base, id })
     job.pr.plan = plan
     job.push = { ref: `refs/heads/${plan.staging}`, open: () => plan.open() }
@@ -190,7 +190,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `• \`@${bot.name} <question or task>\` in a channel I'm in, or message me directly`,
       `• follow up in the same thread${req.isDM ? '' : ' (mention me again)'}: I remember it, and its files stay on my machine until it's been quiet for ${ttl}`,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
-      now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${now.repos.join(', ')}` : `• PRs: not now — ${now.why}`,
+      now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
       ...(cfg.slackDailyLimit ? ['', `You have ${Math.max(0, cfg.slackDailyLimit - used)} of ${cfg.slackDailyLimit} requests left today (resets at 00:00 UTC).`] : []),

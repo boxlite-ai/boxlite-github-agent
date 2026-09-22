@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { boxName, snapshotPath, contextKey, boxSpec, ensureBox, runTurn, slackThreadKey, mixedSides } from '../src/session.mjs'
+import { boxName, snapshotPath, contextKey, boxSpec, ensureBox, runTurn, slackThreadKey, mixedSides, stderrGist } from '../src/session.mjs'
 
 const cfg = {
   image: 'node', cpus: 2, memoryMib: 4096, volume: 'botlite-context', boxDeleteSec: 900,
@@ -32,6 +32,25 @@ test('naming: one stable box, snapshot path and context key per thread', () => {
   assert.equal(snapshotPath('acme/app#7'), '/vol/sessions/acme/app/7/context.sealed')
   assert.equal(Buffer.from(contextKey('master', 'acme/app#7'), 'base64').length, 32)
   assert.notEqual(contextKey('master', 'acme/app#7'), contextKey('master', 'acme/app#8'))
+})
+
+test('stderrGist: the error a crashed run died of, in one line — no stack, no Node banner', () => {
+  // Seen live (chaos 7): the runner threw on its first line; the reply got a stack cut mid-word.
+  const crash = `file:///app/box/session.mjs:1
+throw new Error('chaos 7 again: the session box runner is broken') // chaos 7
+^
+
+Error: chaos 7 again: the session box runner is broken
+    at file:///app/box/session.mjs:1:7
+    at ModuleJob.run (node:internal/modules/esm/module_job:271:25)
+
+Node.js v24.14.1
+`
+  assert.equal(stderrGist(crash), 'Error: chaos 7 again: the session box runner is broken')
+  assert.equal(stderrGist('warming up\nTypeError [ERR_X]: bad thing\n    at f (x.js:1:1)'), 'TypeError [ERR_X]: bad thing')
+  assert.equal(stderrGist('codex: stream disconnected before completion\n'), 'codex: stream disconnected before completion')
+  assert.equal(stderrGist(''), '')
+  assert.equal(stderrGist(`Error: ${'x'.repeat(500)}`).length, 300)
 })
 
 test('boxSpec: shared volume, no credentials of any kind, private, self-cleaning', () => {

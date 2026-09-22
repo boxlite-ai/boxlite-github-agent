@@ -39,18 +39,23 @@ export function mayUseSlack(user, home, where) {
 export const isSlackAdmin = (user) => Boolean(user && !user.deleted && (user.is_primary_owner || user.is_owner || user.is_admin))
 
 /**
- * Where a Slack request may open a draft PR, from the bot's fork: `owner/name`, or `owner/*` for
- * every public repo of that owner. Anyone mayUseSlack() lets in may ask; an admin's `/pause` stops
- * it, on GitHub and in Slack alike. A PR is public, and says only that it was asked for in Slack.
+ * Where a Slack request may open a draft PR, from the bot's fork: `owner/name`, `owner/*` for
+ * every public repo of that owner, or `*` for any public repo. Anyone mayUseSlack() lets in may
+ * ask; an admin's `/pause` stops it, on GitHub and in Slack alike. A PR is public, says only that
+ * it was asked for in Slack, and is a draft that only a human merges.
  */
-export const SLACK_PR_REPOS = ['boxlite-ai/*']
+export const SLACK_PR_REPOS = ['*']
 export function slackPrAllowed(repo, allowed = SLACK_PR_REPOS) {
   const [owner, name] = String(repo).toLowerCase().split('/')
+  if (!owner || !name) return false
   return allowed.some((rule) => {
+    if (rule === '*') return true
     const [o, n] = rule.toLowerCase().split('/')
     return o === owner && (n === '*' || n === name)
   })
 }
+/** Those repos, in words: "any public repo", or "a public repo in acme/*, x/y". */
+export const prTargets = (allowed = SLACK_PR_REPOS) => (allowed.includes('*') ? 'any public repo' : `a public repo in ${allowed.join(', ')}`)
 
 // What the bot may do in Linear, Notion and Google Workspace, tool by tool, as each service's MCP
 // server names its tools. The controller refuses every other call (tools.mjs), however Codex asks —
@@ -68,9 +73,13 @@ const READS = {
 // The changes the bot may make: as its own account, seen by your whole team, for anyone
 // mayUseSlack() lets in and for the bot's admins on GitHub — and triggered by what's in a thread,
 // which anyone in that channel (or, on GitHub, anyone at all) can write.
+// New things and comments, all kept in each service's history: nothing here deletes, moves,
+// shares or overwrites what's there, sends invitations, or edits Google files. (`save_issue`
+// also edits an issue's fields.) The other candidates are under "Linear, Notion and Google
+// Workspace" in the README.
 const WRITES = {
-  // TODO: the writes you allow, e.g. linear: ['save_comment'] — the candidates, and what each does,
-  // are under "Linear, Notion and Google Workspace" in the README. Until then the tools only read.
+  linear: ['save_comment', 'save_issue'],
+  notion: ['notion-create-comment', 'notion-create-pages'],
 }
 
 for (const service of Object.keys(WRITES)) if (!READS[service]) throw new Error(`WRITES names no service "${service}" (one of: ${Object.keys(READS).join(', ')})`)

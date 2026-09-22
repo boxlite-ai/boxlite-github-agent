@@ -1,9 +1,10 @@
 // A stand-in for github.com's git endpoint: `git http-backend` (CGI) over the bare repos under
-// `root`, e.g. <root>/boxliteai/app.git. Records each request (and its auth) in `seen`.
+// `root`, e.g. <root>/boxliteai/app.git. Records each request (and its auth) in `seen`. `refuse`
+// answers a repo ('/boxliteai/x.git') with [status, text] instead, as GitHub refuses a token.
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 
-export async function gitServer(root) {
+export async function gitServer(root, { refuse = {} } = {}) {
   const seen = []
   const server = http.createServer(async (req, res) => {
     const chunks = []
@@ -11,6 +12,11 @@ export async function gitServer(root) {
     const body = Buffer.concat(chunks)
     const url = new URL(req.url, 'http://github.test')
     seen.push({ method: req.method, path: url.pathname, query: url.search, auth: req.headers.authorization })
+    const refused = refuse[url.pathname.replace(/\/(info\/refs|git-receive-pack|git-upload-pack)$/, '')]
+    if (refused) {
+      res.writeHead(refused[0], { 'content-type': 'text/plain; charset=utf-8' })
+      return res.end(refused[1])
+    }
     const cgi = spawn('git', ['http-backend'], {
       env: {
         PATH: process.env.PATH,

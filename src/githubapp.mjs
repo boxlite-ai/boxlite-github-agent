@@ -1,6 +1,7 @@
 // The GitHub App a write turn pushes with — a second App, installed only on the bot's own account
-// (all repositories, so new forks are covered), with Contents: read & write and nothing else. The
-// controller mints one installation token per write turn, scoped to that turn's fork, and keeps it:
+// (all repositories, so new forks are covered), with Contents: read & write, and Workflows: read &
+// write if the bot may change CI. The controller mints one installation token per write turn, scoped
+// to that turn's fork — with Workflows only for a fork that runs no Actions — and keeps it:
 // the session box never sees it (its pushes go through the controller, gitpush.mjs). Its private
 // key signs the App's JWTs here, so unlike the other credentials it can't be a BoxLite secret.
 import { sign } from 'node:crypto'
@@ -16,15 +17,19 @@ export function appJwt(appId, privateKey, now = Date.now()) {
 }
 
 export function githubApp({ appId, privateKey, account, fetchImpl = fetch }) {
-  let installationId = null
   const asApp = () => github(appJwt(appId, privateKey), { fetchImpl })
   return {
-    /** A token for `repo` (a repository name on `account`) that can only write its contents; expires in 1 h. */
-    async token(repo) {
-      installationId ??= (await asApp().json('GET', `/users/${account}/installation`).catch((e) => {
+    /**
+     * A token for `repo` (a repository name on `account`) that can write its contents — and its
+     * workflows, when `workflows` and the installation has that permission; expires in 1 h. The
+     * installation is looked up each time, so a permission granted since counts at once.
+     */
+    async token(repo, { workflows = false } = {}) {
+      const installation = await asApp().json('GET', `/users/${account}/installation`).catch((e) => {
         throw new Error(`the push App isn't installed on @${account} (${e.message.slice(0, 120)})`)
-      })).id
-      const t = await asApp().json('POST', `/app/installations/${installationId}/access_tokens`, { body: { repositories: [repo], permissions: { contents: 'write' } } })
+      })
+      const permissions = { contents: 'write', ...(workflows && installation.permissions?.workflows === 'write' ? { workflows: 'write' } : {}) }
+      const t = await asApp().json('POST', `/app/installations/${installation.id}/access_tokens`, { body: { repositories: [repo], permissions } })
       return t.token
     },
     /** Revoke a token the moment its turn is over — no waiting out the hour. */

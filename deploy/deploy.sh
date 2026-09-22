@@ -72,11 +72,18 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   login=$(body "$res" | jq -r .login)
   scopes=$(grep -i '^x-oauth-scopes:' "$HDRS" | cut -d: -f2- | tr -d '\r' || true)
   [ "$(tr '[:upper:]' '[:lower:]' <<<"$login")" = "$(tr '[:upper:]' '[:lower:]' <<<"$BOT")" ] || echo "  ⚠ token belongs to @$login, not @$BOT — mentions of @$BOT won't reach it"
-  # The bot opens PRs with this token, so no reach beyond public repos (`repo` covers private ones).
-  grep -Eq '(^|[ ,])(repo|delete_repo)(,|$)' <<<"$scopes" && die "token has more scopes than the bot should hold (has:$scopes) — use a classic PAT with notifications + public_repo"
+  # The bot opens PRs with this token and never deletes a repo. `repo` lets it turn Actions off on
+  # its forks; it also reaches private repos, which is fine while the bot's account sees none.
+  grep -Eq '(^|[ ,])delete_repo(,|$)' <<<"$scopes" && die "token can delete repos (has:$scopes) — the bot never should: drop delete_repo"
   grep -Eq '(^|[ ,])notifications(,|$)' <<<"$scopes" || die "token lacks the notifications scope (has:$scopes) — use a classic PAT"
-  grep -Eq '(^|[ ,])public_repo(,|$)' <<<"$scopes" || die "token lacks the public_repo scope (has:$scopes)"
+  grep -Eq '(^|[ ,])(public_repo|repo)(,|$)' <<<"$scopes" || die "token lacks the public_repo scope (has:$scopes)"
   grep -Eq '(^|[ ,])workflow(,|$)' <<<"$scopes" || echo "  ⚠ token lacks the workflow scope — a fork can't catch up with an upstream that changed a workflow, and PRs from it fail"
+  if grep -Eq '(^|[ ,])repo(,|$)' <<<"$scopes"; then
+    private=$(body "$(authed "$GITHUB_TOKEN" 'https://api.github.com/user/repos?visibility=private&per_page=1')" | jq 'if type == "array" then length else 0 end')
+    [ "${private:-0}" = 0 ] || echo "  ⚠ the repo scope reaches private repos, and @$login can see some — keep the bot's account out of them"
+  else
+    echo "  ⚠ token lacks the repo scope — the bot can't turn Actions off on its forks, so it won't open PRs"
+  fi
   echo "  @$login ·$scopes"
 else
   echo "  not given — the controller will wait for it (GITHUB_TOKEN=… node deploy/ctl.mjs github-token)"

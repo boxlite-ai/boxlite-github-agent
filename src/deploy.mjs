@@ -84,7 +84,7 @@ export function goodBuild(stateDir) {
  */
 export const TRIAL_TURN = { number: 0, prompt: 'This is the bot checking a new build of itself, not a request from anyone. Reply with exactly: OK' }
 /** Why a trial turn failed — null if it answered. */
-export const trialTurnFailure = (out) => (out?.message ? null : `couldn't run a turn in its trial (${String(out?.error || 'no answer').slice(0, 160)})`)
+export const trialTurnFailure = (out) => (out?.message ? null : `couldn't run a turn in its trial (${String(out?.error || 'no answer').split('\n')[0].slice(0, 160)})`)
 /** A clean exit (drained, restarting) is no failure: the launcher counts crashes only. */
 export const cleanExit = (stateDir, commit) => writeFileSync(path.join(stateDir, 'boot.json'), JSON.stringify({ commit, tries: 0 }))
 /** A build that failed its trial: the launcher rolls it back on the next start, saying why. */

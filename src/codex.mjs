@@ -1,5 +1,6 @@
 // Codex CLI as @botlite's brain: the command a session box runs, the reading of its `--json`
 // event stream, and the prompts. Pure — no I/O — so all of it is unit-tested.
+import { prTargets } from './policy.mjs'
 
 // Pinned: the flags and JSONL events below are checked against it. The backend offers a model
 // only to clients at or above its minimal version (gpt-6-astra needs 0.153.0).
@@ -202,7 +203,7 @@ const size = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : n
 function prNote({ ok = false, why = 'PR writing is off', repos = [] } = {}) {
   if (!ok) return `Opening pull requests isn't available right now (${why}): if you're asked for one, say so, and put the change in your reply as a patch.`
   return `You can propose a change as a draft pull request, opened on GitHub from the bot's own account,
-into a public repo in ${repos.join(', ')}. Clone the repo in your working directory, commit the change
+into ${prTargets(repos)}. Clone the repo in your working directory, commit the change
 there on top of its default branch, then write pr.json in your working directory:
 {"repo": "owner/name", "dir": "<the clone's path, relative to your working directory>"}. After your
 turn the bot pushes those commits and opens the draft PR; its link goes under your reply. You have
