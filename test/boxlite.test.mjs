@@ -26,6 +26,16 @@ function fakeWs(script) {
 }
 const frame = (channel, text) => Uint8Array.from([channel, ...Buffer.from(text)]).buffer
 
+test('attach: Stop closes the socket and does not retry or open an already cancelled request', async () => {
+  const abort = new AbortController()
+  const { FakeWS, made } = fakeWs(() => abort.abort())
+  const bl = boxlite('k', { WebSocketImpl: FakeWS })
+  await assert.rejects(bl.attach('b', 'e', { signal: abort.signal, timeoutMs: 5000, retryDelayMs: 1 }), /cancelled/)
+  assert.equal(made.length, 1)
+  await assert.rejects(bl.attach('b', 'e', { signal: abort.signal, timeoutMs: 5000 }))
+  assert.equal(made.length, 1)
+})
+
 test('attach: auth header, stdin then EOF, demuxed output, resolves with the exit code', async () => {
   const { FakeWS, made } = fakeWs((ws) => {
     ws.onmessage({ data: frame(0x01, 'out-1\n') })

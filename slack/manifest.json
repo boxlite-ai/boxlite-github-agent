@@ -1,7 +1,7 @@
 {
   "display_information": {
     "name": "BoxLite",
-    "description": "A coding agent: mention it or DM it, and it works in its own BoxLite microVM, then answers in the thread.",
+    "description": "An agent for Slack and coding tasks, with conversations, tools and saved automations.",
     "background_color": "#1f2328"
   },
   "features": {
@@ -13,6 +13,19 @@
     "bot_user": {
       "display_name": "boxliteai",
       "always_online": true
+    },
+    "agent_view": {
+      "agent_description": "Ask questions, take action in Slack, work on code, or save a recurring task.",
+      "suggested_prompts": [
+        {
+          "title": "Explore capabilities",
+          "message": "What can you do in Slack?"
+        },
+        {
+          "title": "Summarize a conversation",
+          "message": "Summarize this conversation and its next steps."
+        }
+      ]
     }
   },
   "oauth_config": {
@@ -26,7 +39,11 @@
         "channels:history",
         "groups:history",
         "im:history",
-        "mpim:history"
+        "mpim:history",
+        "assistant:write",
+        "channels:read",
+        "groups:read",
+        "search:read.public"
       ]
     }
   },
@@ -34,7 +51,11 @@
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
-        "message.im"
+        "message.im",
+        "message.channels",
+        "message.groups",
+        "agent_session_stopped",
+        "app_context_changed"
       ]
     },
     "interactivity": {

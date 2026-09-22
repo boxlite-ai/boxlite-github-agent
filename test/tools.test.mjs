@@ -107,10 +107,13 @@ test('broker: a tool that isn’t listed — or a method outside a tool session 
 
 test('broker: a listed change goes through and is recorded; the change and call budgets hold', async () => {
   const job = { who: 'bob (U2)', writes: [], tools: ['linear'], logins }
+  const saved = []
+  job.slack = { record: async () => { saved.push([...job.writes]) } }
   const t = jobs.issue(60_000, 'T1/C1/2.2', job)
   const ok = await (await call(t, 'linear', rpc('tools/call', { name: 'save_comment', arguments: { issueId: 'LIN-1', body: 'Fixed in #12' } }))).json()
   assert.equal(ok.result.content[0].text, 'did save_comment')
   assert.deepEqual(job.writes, ['Linear save_comment'])
+  assert.deepEqual(saved, [['Linear save_comment']])
   const second = await (await call(t, 'linear', rpc('tools/call', { name: 'save_comment', arguments: {} }))).json()
   assert.match(second.result.content[0].text, /used up the changes it may make/)
   await call(t, 'linear', rpc('tools/call', { name: 'get_issue', arguments: {} }))
@@ -118,6 +121,15 @@ test('broker: a listed change goes through and is recorded; the change and call 
   const over = await (await call(t, 'linear', rpc('tools/call', { name: 'get_issue', arguments: {} }))).json()
   assert.match(over.result.content[0].text, /used up its tool calls/)
   jobs.revoke(t)
+})
+
+test('broker: revocation while a personal login is loading prevents forwarding a write', async () => {
+  const before = seen.length
+  const own = { ready: () => true, token: async () => { jobs.revoke(t); return 'personal-token' } }
+  const t = jobs.issue(60_000, 'T1/D1/1.1', { tools: ['linear'], logins: { linear: own } })
+  const res = await call(t, 'linear', rpc('tools/call', { name: 'save_comment', arguments: {} }))
+  assert.equal(res.status, 502)
+  assert.equal(seen.length, before)
 })
 
 test('broker: no live job token → 403 (never a 401); a service not linked, unknown or with no tools allowed → 404', async () => {

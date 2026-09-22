@@ -56,6 +56,18 @@ test('download: bytes from files.slack.com with the bot token — and nowhere el
   assert.equal(seen.length, 1)
 })
 
+test('call: revoking authority during rate-limit backoff prevents another upstream write', async () => {
+  let calls = 0, stopped = false
+  const sk = slack('t', {
+    fetchImpl: async () => { calls++; return json(429, {}, { 'retry-after': '1' }) },
+    sleep: async () => { stopped = true },
+  })
+  await assert.rejects(sk.call('chat.postMessage', { channel: 'C1', text: 'hello' }, {
+    check: () => { if (stopped) throw new Error('Stopped') },
+  }), /Stopped/)
+  assert.equal(calls, 1)
+})
+
 test('download: Slack’s sign-in page instead of the file, a file over the limit, an HTTP error → errors', async () => {
   const page = slack('t', { fetchImpl: async () => new Response('<!DOCTYPE html><title>Slack</title>', { headers: { 'content-type': 'text/html; charset=utf-8' } }) })
   await assert.rejects(page.download('https://files.slack.com/f', { maxBytes: 1e6, mimetype: 'text/plain' }), /files:read/)

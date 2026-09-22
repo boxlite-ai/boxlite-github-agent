@@ -57,7 +57,7 @@ test('isHelp: help alone, with or without the mention, any case — not a reques
 test('plainText: Slack markup made readable, literal angle brackets kept', () => {
   const names = new Map([['U1', 'alice'], ['UBOT', 'botlite']])
   const text = '<@UBOT> ask <@U1> and <@U2|bob> in <#C1|general>, <!here>, <!subteam^S1|@devs>: see <https://ci.example/run/1|the run> or <https://x.dev> — a &lt;b&gt; &amp; <mailto:a@b.co|a@b.co>'
-  assert.equal(plainText(text, names), '@botlite ask @alice and @bob in #general, @here, @devs: see the run (https://ci.example/run/1) or https://x.dev — a <b> & a@b.co')
+  assert.equal(plainText(text, names), '@botlite ask @alice and @bob in #general (channel ID: C1), @here, @devs: see the run (https://ci.example/run/1) or https://x.dev — a <b> & a@b.co')
   assert.equal(plainText(undefined), '')
 })
 
