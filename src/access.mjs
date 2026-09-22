@@ -18,7 +18,12 @@ export const COMMANDS = [
   { name: 'list', admin: true, usage: '/list', does: 'who can ask me for PRs in this repo' },
   { name: 'pause', admin: true, usage: '/pause', does: 'stop all PR writing, everywhere' },
   { name: 'resume', admin: true, usage: '/resume', does: 'start it again' },
+  { name: 'model', admin: true, usage: '/model [model] [effort]', does: 'show or set the model and reasoning effort every turn runs on' },
 ]
+
+/** The model and effort turns run on: an admin's `/model` (state.codex), else the deploy's defaults. */
+export const modelOf = (state, defaults = {}) => ({ model: state.codex?.model ?? defaults.model ?? null, effort: state.codex?.effort ?? defaults.effort ?? null })
+const describeModel = ({ model, effort }) => `${model ? `\`${model}\`` : "Codex's default model"}${effort ? ` at \`${effort}\` effort` : ''}`
 
 /**
  * A comment that starts with `@login /word …` is a command; so is one that is only `@login help`
@@ -56,7 +61,7 @@ export function writeAccess({ state, admins, req, ready = true }) {
 }
 
 /** The help reply, for this person in this repo: what they can do, and whether PRs are open to them. */
-export function helpText({ login, req, access, isAdmin, left, limit }) {
+export function helpText({ login, req, access, isAdmin, left, limit, running }) {
   const lines = [
     `@${req.author} mention me with a question or a task — I run the code in an isolated [BoxLite](https://boxlite.ai) box and answer here.`,
     '',
@@ -66,6 +71,7 @@ export function helpText({ login, req, access, isAdmin, left, limit }) {
     access.ok
       ? `**PRs:** you can ask me to open or update PRs in ${req.repo} (${access.why}). They're drafts from my fork, one commit per request.`
       : `**PRs:** you can't ask me for PRs in ${req.repo}: ${access.why}.`,
+    ...(running ? ['', `**Model:** ${describeModel(running)}.`] : []),
   ]
   if (isAdmin) {
     lines.push('', '**Admin:**')
@@ -78,10 +84,11 @@ export function helpText({ login, req, access, isAdmin, left, limit }) {
 /**
  * Carry out a command; returns the reply text. Admin commands count only in a comment that was
  * never edited: anyone with write access to a repo can edit other people's comments there, so an
- * edited comment is not proof of what its author wrote. `lookup(login)` → { id, login } | null.
+ * edited comment is not proof of what its author wrote. `lookup(login)` → { id, login } | null;
+ * `models()` → the backend's catalog for this Codex version, [{ slug, efforts, listed }].
  */
-export async function runCommand(cmd, { state, admins, req, login, lookup, access, left, limit, now = new Date() }) {
-  const help = () => helpText({ login, req, access, isAdmin: admins.has(req.userId), left, limit })
+export async function runCommand(cmd, { state, admins, req, login, lookup, models, defaults, access, left, limit, now = new Date() }) {
+  const help = () => helpText({ login, req, access, isAdmin: admins.has(req.userId), left, limit, running: modelOf(state, defaults) })
   if (cmd.unknown) return `I don't know \`/${cmd.unknown}\`.\n\n${help()}`
   if (cmd.name === 'help') return help()
   const who = `@${req.author}`
@@ -89,6 +96,7 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, acces
   if (req.kind === 'body' || req.edited) return `${who} admin commands only count in a new comment that was never edited — please post it again as a fresh comment.`
 
   const at = now.toISOString()
+  if (cmd.name === 'model') return setModel(cmd.arg, { state, who, models, defaults, at, by: req.author })
   const grants = (state.grants ??= {})
   const here = grants[repoKey(req.repo)] ?? {}
   if (cmd.name === 'pause') {
@@ -107,12 +115,39 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, acces
   if (!LOGIN.test(name)) return `${who} usage: \`@${login} /${cmd.name} @user\``
   const user = await lookup(name)
   if (!user) return `${who} there's no GitHub user @${name}.`
+  // The repo's grants as they are now, after the lookup: another command may have changed them meanwhile.
+  const current = (grants[repoKey(req.repo)] ??= {})
   if (cmd.name === 'add') {
-    here[user.id] = { login: user.login, by: req.author, at }
-    grants[repoKey(req.repo)] = here
+    current[user.id] = { login: user.login, by: req.author, at }
     return `${who} ✅ @${user.login} can now ask me for PRs in ${req.repo}.`
   }
-  if (!here[user.id]) return `${who} @${user.login} wasn't on the list for ${req.repo}.`
-  delete here[user.id]
+  if (!current[user.id]) return `${who} @${user.login} wasn't on the list for ${req.repo}.`
+  delete current[user.id]
   return `${who} ✅ @${user.login} can no longer ask me for PRs in ${req.repo}.`
+}
+
+/**
+ * `/model` shows what turns run on and what the backend offers; `/model <model> [effort]` sets it,
+ * only if the backend offers that model (and effort) to this Codex version — a bad setting would
+ * fail every turn — and `/model default` goes back to the deploy's defaults.
+ */
+async function setModel(arg, { state, who, models, defaults, at, by }) {
+  const [model, effort] = arg.split(/\s+/).filter(Boolean)
+  let catalog
+  try {
+    catalog = await models()
+  } catch (e) {
+    return `${who} I couldn't read the model list, so nothing changed: ${e.message.slice(0, 200)}`
+  }
+  const offered = catalog.filter((m) => m.listed).map((m) => `\`${m.slug}\` (${m.efforts.join(', ')})`).join(' · ')
+  if (!model) return `${who} turns run on ${describeModel(modelOf(state, defaults))}${state.codex ? ` — set by @${state.codex.by} on ${state.codex.at.slice(0, 10)}` : ''}.\n\nAvailable: ${offered}`
+  if (model === 'default') {
+    state.codex = null
+    return `${who} ✅ turns are back on the default: ${describeModel(modelOf(state, defaults))}.`
+  }
+  const m = catalog.find((x) => x.slug === model)
+  if (!m) return `${who} the backend doesn't offer \`${model}\` to this bot's Codex, so nothing changed.\n\nAvailable: ${offered}`
+  if (effort && !m.efforts.includes(effort)) return `${who} \`${model}\` doesn't offer \`${effort}\` effort, so nothing changed — it has ${m.efforts.map((e) => `\`${e}\``).join(', ')}.`
+  state.codex = { model, effort: effort ?? null, by, at }
+  return `${who} ✅ turns now run on ${describeModel(state.codex)}.`
 }

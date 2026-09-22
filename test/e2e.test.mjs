@@ -20,12 +20,13 @@ try {
 }
 const skip = !process.env.BOTLITE_E2E ? 'set BOTLITE_E2E=1 to run' : !codexVersion.includes(CODEX_VERSION) ? `needs codex ${CODEX_VERSION}` : false
 
-test('e2e: a real Codex turn goes through the proxy on the job token, the real login is swapped in', { skip, timeout: 180_000 }, async () => {
+test('e2e: a real Codex turn — then a resume — goes through the proxy on the job token, the real login is swapped in', { skip, timeout: 300_000 }, async () => {
   const seen = []
   const sse = (e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`
   const upstream = http.createServer(async (req, res) => {
-    for await (const _ of req);
-    seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, account: req.headers['chatgpt-account-id'] })
+    let body = ''
+    for await (const c of req) body += c
+    seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, account: req.headers['chatgpt-account-id'], body: req.method === 'POST' ? JSON.parse(body) : null })
     if (req.url.startsWith('/backend-api/codex/models')) return res.writeHead(404).end()
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.write(sse({ type: 'response.created', response: { id: 'resp_1' } }))
@@ -43,23 +44,35 @@ test('e2e: a real Codex turn goes through the proxy on the job token, the real l
   mkdirSync(path.join(ctx, 'repo'))
   execFileSync('git', ['init', '-q', path.join(ctx, 'repo')])
   const token = jobs.issue(12 * 3_600_000, 'acme/app#7')
-  const args = codexArgs({ cwd: path.join(ctx, 'repo'), outFile: path.join(ctx, 'last-message.md'), proxyUrl: `http://127.0.0.1:${proxy.address().port}` })
-  try {
-    const out = await new Promise((resolve) => {
+  const base = { cwd: path.join(ctx, 'repo'), outFile: path.join(ctx, 'last-message.md'), proxyUrl: `http://127.0.0.1:${proxy.address().port}`, model: 'gpt-6-astra', effort: 'xhigh' }
+  const turn = (args, prompt) =>
+    new Promise((resolve) => {
       const child = spawn(process.execPath, [path.resolve('box/session.mjs')], {
         env: { PATH: process.env.PATH, CTX: ctx, CONTEXT_KEY: Buffer.alloc(32).toString('base64'), REPO: 'acme/app', NUMBER: '7', IS_PR: '0', CODEX_VERSION, BOTLITE_ARGS: JSON.stringify(args), BOTLITE_JOB_TOKEN: token },
       })
       let stdout = ''
       child.stdout.on('data', (d) => (stdout += d))
-      child.on('close', () => resolve(stdout))
-      child.stdin.end('Say hello.')
+      child.on('close', () => resolve({ run: stdout.split('\n').reduce(applyEvent, newRun()), result: JSON.parse(stdout.trim().split('\n').at(-1)) }))
+      child.stdin.end(prompt)
     })
-    const run = out.split('\n').reduce(applyEvent, newRun())
-    const result = JSON.parse(out.trim().split('\n').at(-1))
-    assert.equal(result.code, 0)
-    assert.equal(run.completed, true)
-    assert.equal(result.lastMessage, 'Hello from the fake backend.')
-    assert.ok(seen.some((s) => s.method === 'POST' && s.url === '/backend-api/codex/responses'))
+  try {
+    const first = await turn(codexArgs(base), 'Say hello.')
+    assert.equal(first.result.code, 0)
+    assert.equal(first.run.completed, true)
+    assert.equal(first.result.lastMessage, 'Hello from the fake backend.')
+    assert.ok(first.run.sessionId)
+
+    const second = await turn(codexArgs({ ...base, sessionId: first.run.sessionId }), 'Say hello again.') // `exec resume`
+    assert.equal(second.result.code, 0, JSON.stringify(second.result))
+    assert.equal(second.run.completed, true)
+    assert.equal(second.run.sessionId, first.run.sessionId)
+
+    const turns = seen.filter((s) => s.method === 'POST' && s.url === '/backend-api/codex/responses')
+    assert.ok(turns.length >= 2)
+    for (const t of turns) {
+      assert.equal(t.body.model, 'gpt-6-astra') // -m
+      assert.equal(t.body.reasoning?.effort, 'xhigh') // model_reasoning_effort
+    }
     for (const s of seen) {
       assert.match(s.url, /^\/backend-api\/codex\/(responses|models)/) // nothing else got through
       assert.equal(s.auth, 'Bearer REAL-ACCESS-TOKEN')

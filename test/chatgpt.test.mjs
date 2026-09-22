@@ -4,10 +4,33 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import { signJobToken, verifyJobToken, jobTokens, chatgptLogin, parseDevicePrompt, deviceLogin, CLIENT_ID, BOX_ACCOUNT_ID } from '../src/chatgpt.mjs'
+import { signJobToken, verifyJobToken, jobTokens, chatgptLogin, parseDevicePrompt, deviceLogin, codexModels, CLIENT_ID, BOX_ACCOUNT_ID } from '../src/chatgpt.mjs'
 
 const SECRET = Buffer.from('job-secret')
 const future = () => Math.floor(Date.now() / 1000) + 60
+
+test('codexModels: the catalog for a Codex version, with the real login; an expired token is refreshed once', async () => {
+  let token = 'at-old'
+  const login = { get: () => ({ access_token: token, account_id: 'acct-real' }), refresh: async () => (token = 'at-new') }
+  const calls = []
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, auth: init.headers.authorization, account: init.headers['chatgpt-account-id'] })
+    if (init.headers.authorization === 'Bearer at-old') return new Response('{}', { status: 401 })
+    return Response.json({ models: [
+      { slug: 'gpt-6-astra', visibility: 'list', supported_reasoning_levels: [{ effort: 'high' }, { effort: 'xhigh' }] },
+      { slug: 'gpt-reserve', visibility: 'hide', supported_reasoning_levels: [{ effort: 'low' }] },
+    ] })
+  }
+  assert.deepEqual(await codexModels({ login, clientVersion: '0.155.1', upstream: 'https://chatgpt.test', fetchImpl }), [
+    { slug: 'gpt-6-astra', efforts: ['high', 'xhigh'], listed: true },
+    { slug: 'gpt-reserve', efforts: ['low'], listed: false },
+  ])
+  assert.deepEqual(calls.map((c) => [c.url, c.auth, c.account]), [
+    ['https://chatgpt.test/backend-api/codex/models?client_version=0.155.1', 'Bearer at-old', 'acct-real'],
+    ['https://chatgpt.test/backend-api/codex/models?client_version=0.155.1', 'Bearer at-new', 'acct-real'],
+  ])
+  await assert.rejects(codexModels({ login, clientVersion: '0.155.1', fetchImpl: async () => new Response('', { status: 503 }) }), /answered 503/)
+})
 
 test('job tokens: verify only when authentic and unexpired', () => {
   const t = signJobToken(SECRET, { jti: 'j1', exp: future() })

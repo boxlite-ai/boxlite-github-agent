@@ -17,7 +17,8 @@
 //           who may ask for PRs anywhere and run the admin commands (access.mjs)
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
-//   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, MAX_CONCURRENT (3),
+//   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, CODEX_EFFORT (both until an admin's
+//   /model), MAX_CONCURRENT (3),
 //   DAILY_LIMIT_PER_USER (20), JOB_TIMEOUT_MIN (20), BOX_TTL_DAYS (3),
 //   STATE_FILE (/var/lib/botlite/state.json; its directory is the state dir).
 import { createHmac, randomBytes } from 'node:crypto'
@@ -29,12 +30,12 @@ import { loadState, saveState, takeQuota } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
 import { runTurn } from './session.mjs'
-import { newSessionPrompt, followUpPrompt } from './codex.mjs'
-import { chatgptLogin, jobTokens, deviceLogin } from './chatgpt.mjs'
+import { newSessionPrompt, followUpPrompt, CODEX_VERSION } from './codex.mjs'
+import { chatgptLogin, jobTokens, deviceLogin, codexModels } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
 import { gitPushHandler } from './gitpush.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
-import { parseCommand, runCommand, writeAccess } from './access.mjs'
+import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
 import { planWrite, publishWrite } from './publish.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
@@ -60,7 +61,8 @@ const cfg = {
   image: env.SESSION_IMAGE || 'node',
   cpus: Number(env.SESSION_CPUS || 2),
   memoryMib: Number(env.SESSION_MEMORY_MIB || 4096),
-  model: env.CODEX_MODEL || undefined,
+  model: env.CODEX_MODEL || undefined, // defaults; an admin's /model (state.codex) wins
+  effort: env.CODEX_EFFORT || undefined,
   maxConcurrent: Number(env.MAX_CONCURRENT || 3),
   dailyLimit: Number(env.DAILY_LIMIT_PER_USER || 20),
   jobTimeoutMs: Number(env.JOB_TIMEOUT_MIN || 20) * 60_000,
@@ -122,7 +124,9 @@ const webhook = webhookHandler({
   },
 })
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log, webhook, git })
+/** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
+const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -233,7 +237,9 @@ async function turn(key, req, pr, prompt, sessionId, plan) {
   const push = plan ? { ref: `refs/heads/${plan.staging}`, open: () => plan.open() } : null
   const jobToken = jobs.issue(12 * 3_600_000, key, { push })
   try {
-    return await runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
+    const { model, effort } = running()
+    log(`${key}: turn on ${model ?? "Codex's default model"}${effort ? `, ${effort} effort` : ''}`)
+    return await runTurn({ bl, cfg: { ...cfg, model: model ?? undefined, effort: effort ?? undefined }, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
   } finally {
     jobs.revoke(jobToken)
   }
@@ -297,7 +303,8 @@ async function handle(req) {
 async function command(req, cmd) {
   const access = writeAccess({ state, admins, req, ready: Boolean(await loadPushApp()) })
   const left = cfg.dailyLimit - (state.usage[req.author]?.count ?? 0)
-  const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, access, left, limit: cfg.dailyLimit })
+  const models = () => codexModels({ login: chatgpt, clientVersion: CODEX_VERSION })
+  const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, models, defaults: { model: cfg.model, effort: cfg.effort }, access, left, limit: cfg.dailyLimit })
   await persist()
   await reply(gh, req, text, { footer: false })
 }
@@ -367,7 +374,7 @@ process.on('SIGTERM', async () => {
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
 onRequest = accept
-await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}`)
+await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}, codex ${CODEX_VERSION}`)
 for (;;) {
   let interval = 60
   try {

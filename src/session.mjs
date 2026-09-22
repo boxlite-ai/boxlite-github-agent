@@ -63,7 +63,7 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobTok
   // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
   // race the attach handshake (seen live).
   if (!/running/i.test(String(box.status ?? box.state ?? ''))) await bl.startBox(boxId).catch((e) => log(`start ${boxId}: ${e.message}`))
-  const args = codexArgs({ sessionId, cwd: `${CTX}/repo`, outFile: `${CTX}/last-message.md`, proxyUrl, model: cfg.model })
+  const args = codexArgs({ sessionId, cwd: `${CTX}/repo`, outFile: `${CTX}/last-message.md`, proxyUrl, model: cfg.model, effort: cfg.effort })
   const { execution_id: execId } = await bl.startExec(boxId, {
     command: 'node',
     args: ['--input-type=module', '-e', RUNNER],

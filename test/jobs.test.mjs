@@ -37,18 +37,19 @@ test('scheduler: at most `max` jobs at once across threads', async () => {
 test('state: defaults when missing, round-trips, owner-only file', async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state', 'state.json')
   const s = await loadState(file)
-  assert.deepEqual({ ...s, seen: [...s.seen] }, { lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {} })
+  assert.deepEqual({ ...s, seen: [...s.seen] }, { lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null })
   s.seen.add('ic:1')
   s.threads['acme/app#7'] = { sessionId: 's1', boxId: 'b1' }
   s.lastModified = 'T1'
   s.grants['acme/app'] = { 42: { login: 'alice', by: 'root', at: 'T0' } }
   s.paused = { by: 'root', at: 'T1' }
   s.forks['acme/app'] = 'botlite/app'
+  s.codex = { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: 'T2' }
   await saveState(file, s)
   const again = await loadState(file)
   assert.deepEqual([...again.seen], ['ic:1'])
   assert.deepEqual(again.threads, { 'acme/app#7': { sessionId: 's1', boxId: 'b1' } })
-  assert.deepEqual([again.grants, again.paused, again.forks], [s.grants, s.paused, s.forks])
+  assert.deepEqual([again.grants, again.paused, again.forks, again.codex], [s.grants, s.paused, s.forks, s.codex])
   assert.equal(statSync(file).mode & 0o777, 0o600)
 })
 
