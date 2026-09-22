@@ -1,0 +1,57 @@
+name: health
+# Every 15 minutes: is the controller up and polling? Its /healthz (public, no secrets) answers
+# 503 when it's alive but hasn't polled for 10 minutes. While it's down, one issue says so (kept
+# up to date, not a comment per check); when it's back, the issue is closed.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: /healthz
+        id: health
+        env:
+          URL: ${{ vars.CONTROLLER_URL }}
+        run: |
+          if [ -z "$URL" ]; then echo "::notice::set the CONTROLLER_URL repository variable to check the controller"; exit 0; fi
+          for i in 1 2 3; do
+            out="$(curl -sS --max-time 20 -w ' (HTTP %{http_code})' "$URL/healthz" 2>&1)" && case "$out" in *'(HTTP 200)') echo "ok"; exit 0 ;; esac
+            sleep 20
+          done
+          echo "$out"
+          printf 'why=%s\n' "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Say it's down
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          WHY: ${{ steps.health.outputs.why }}
+        with:
+          script: |
+            const label = 'controller-down'
+            await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'b60205' }).catch(() => {})
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: label })
+            const body = [
+              `The controller failed its health check at ${new Date().toISOString()}: ${process.env.WHY || 'no answer'}.`,
+              '',
+              'Recover with the **deploy** workflow: `rollback` to the last good commit of main, or `restart`.',
+            ].join('\n')
+            if (open.length) await github.rest.issues.update({ ...context.repo, issue_number: open[0].number, body })
+            else await github.rest.issues.create({ ...context.repo, title: 'boxlite-controller is down', body, labels: [label] })
+
+      - name: Say it's back
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'controller-down' })
+            for (const issue of open) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `Healthy again at ${new Date().toISOString()}.` })
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: 'closed' })
+            }

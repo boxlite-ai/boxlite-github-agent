@@ -56,11 +56,18 @@ export async function deployPlan({ gh, build }) {
   return { from: build.commit, to: commits.at(-1)?.sha ?? build.commit, status: cmp.status, commits }
 }
 
-/** The launcher's verdicts, kept in the state dir: a build is good once it's live. */
+/**
+ * The launcher's verdicts, kept in the state dir. A build is good once it has stayed up through
+ * its trial (TRIAL_MS); until then, every crash counts toward the launcher's rollback — a build
+ * that dies on its first requests is rolled back too, not only one that can't start.
+ */
+export const TRIAL_MS = 10 * 60_000
 export function markGood(stateDir, commit) {
   writeFileSync(path.join(stateDir, 'good-build.json'), JSON.stringify({ commit, at: new Date().toISOString() }))
   rmSync(path.join(stateDir, 'boot.json'), { force: true })
 }
+/** A clean exit (drained, restarting) is no failure: the launcher counts crashes only. */
+export const cleanExit = (stateDir, commit) => writeFileSync(path.join(stateDir, 'boot.json'), JSON.stringify({ commit, tries: 0 }))
 /** A rollback the launcher did before this start ({ from, to, at }), read once. */
 export function takeRollback(stateDir) {
   const file = path.join(stateDir, 'rollback.json')
@@ -73,14 +80,22 @@ export function takeRollback(stateDir) {
   }
 }
 
-/** How a `/deploy` turned out, for the thread that asked; null when none was pending. */
+/**
+ * How a `/deploy` turned out, for the thread that asked; null when there's nothing new to say. A
+ * deploy stays pending through the new build's trial (`live: true`), so a rollback during it is
+ * reported in the same thread.
+ */
 export function deployOutcome({ pending, running, rollback }) {
   if (!pending) return null
   const who = `@${pending.by}`
-  if (rollback) return `${who} ⚠️ \`${short(rollback.from)}\` didn't come up — it failed to start three times, so I rolled back to \`${short(rollback.to)}\`. Fix it on \`main\` and \`/deploy\` again.`
-  if (running === pending.to) return `${who} ✅ \`${short(pending.to)}\` is live.`
+  if (rollback) return `${who} ⚠️ \`${short(rollback.from)}\` ${rollback.why ?? `failed three times before its ${TRIAL_MS / 60_000}-minute trial was up`}, so I'm on \`${short(rollback.to)}\` again. Fix it on \`main\` and \`/deploy\` again.`
+  if (pending.live) return null // restarted during its trial: it already said it's live
+  if (running === pending.to) return `${who} ✅ \`${short(pending.to)}\` is live. If it fails in the next ${TRIAL_MS / 60_000} minutes, I roll it back.`
   return `${who} ⚠️ that deploy didn't take: I'm running \`${short(running)}\`, not \`${short(pending.to)}\`.`
 }
+
+/** What's left pending after this start: kept (live) through the trial, dropped otherwise. */
+export const pendingAfter = ({ pending, running, rollback }) => (pending && !rollback && running === pending.to ? { ...pending, live: true } : null)
 
 // The bot's own trust boundary: who may publish, what gets checked and pushed, the credentials,
 // the runner and the deploy. A PR on the bot's own repo that touches these says so at the top.

@@ -74,6 +74,20 @@ test('only the model endpoints go through — the rest of the ChatGPT backend is
   jobs.revoke(t)
 })
 
+test('/healthz: 200 while the controller polls, 503 with the reason once it has stalled', async () => {
+  let healthy = true
+  const p = createProxy({ login, secret: SECRET, jobs, upstream: 'http://127.0.0.1:9', health: () => (healthy ? { ok: true } : { ok: false, why: 'no successful poll for 12 minutes' }) })
+  await new Promise((r) => p.listen(0, '127.0.0.1', r))
+  try {
+    const get = () => fetch(`http://127.0.0.1:${p.address().port}/healthz`).then(async (r) => [r.status, (await r.json()).error.message])
+    assert.deepEqual(await get(), [200, 'ok'])
+    healthy = false
+    assert.deepEqual(await get(), [503, 'no successful poll for 12 minutes'])
+  } finally {
+    p.close()
+  }
+})
+
 test('the pinned model can be a getter: an admin’s /model applies from the next request', async () => {
   let current = 'gpt-5.6-sol'
   const live = createProxy({ login: { get: () => ({ access_token: 'at-fresh', account_id: 'acct-real' }), refresh: async () => {} }, secret: SECRET, jobs, upstream: `http://127.0.0.1:${upstream.address().port}`, model: () => current })

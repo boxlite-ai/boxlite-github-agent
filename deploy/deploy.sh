@@ -107,6 +107,8 @@ BOOT='set -u
 mkdir -p "$HOME/.botlite" && exec >> "$HOME/.botlite/controller.log" 2>&1
 cd "$HOME"
 [ -d botlite/.git ] || git clone --quiet --branch "$BOTLITE_REF" https://github.com/boxlite-ai/boxlite-github-agent.git botlite
+# The pull gate (deploy/post-merge.sh): installed once; a pull never replaces a hook.
+[ -x botlite/.git/hooks/post-merge ] || install -m 755 botlite/deploy/post-merge.sh botlite/.git/hooks/post-merge
 export STATE_FILE="${STATE_FILE:-$HOME/.botlite/state.json}"
 # BoxLite swaps secrets in by intercepting HTTPS with a CA it adds to the system bundle; Node only
 # trusts its own bundle unless told (without this: SELF_SIGNED_CERT_IN_CHAIN on every call).

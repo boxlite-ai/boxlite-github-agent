@@ -1,0 +1,70 @@
+name: deploy
+# The controller, operated from GitHub. Its secrets live in the `production` environment — a run
+# waits for the environment's reviewer, and only main may deploy — never on anyone's machine.
+#   restart   pull main and restart onto it (running turns finish first)
+#   handover  give the controller its tokens and keys from the environment (after a rotation)
+#   rollback  run an earlier commit of main until the next restart or /deploy
+# Each run waits until the build it expects is live, and fails with how its start went if not (the
+# boot lines only: this log is public).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: restart · handover · rollback
+        type: choice
+        options: [restart, handover, rollback]
+        default: restart
+      commit:
+        description: 'rollback only: the commit of main to run'
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Hand over tokens and keys
+        if: inputs.action == 'handover'
+        env:
+          BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          GITHUB_APP_ID: ${{ vars.PUSH_APP_ID }}
+          PUSH_APP_PRIVATE_KEY: ${{ secrets.PUSH_APP_PRIVATE_KEY }}
+          BOT_ADMINS: ${{ vars.BOT_ADMINS }}
+        run: |
+          node deploy/ctl.mjs github-token
+          umask 077
+          key="$RUNNER_TEMP/push-app.pem"
+          printf '%s\n' "$PUSH_APP_PRIVATE_KEY" > "$key"
+          GITHUB_APP_KEY="$key" node deploy/ctl.mjs github-app
+          rm -f "$key"
+          node deploy/ctl.mjs hook
+          node deploy/ctl.mjs admins "$BOT_ADMINS"
+
+      - name: Restart onto main
+        if: inputs.action == 'restart'
+        env:
+          BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
+        run: node deploy/ctl.mjs restart
+
+      - name: Roll back
+        if: inputs.action == 'rollback'
+        env:
+          BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
+          COMMIT: ${{ inputs.commit }}
+        run: node deploy/ctl.mjs rollback "$COMMIT"
+
+      - name: Wait until it's live
+        env:
+          BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
+          COMMIT: ${{ inputs.action == 'rollback' && inputs.commit || github.sha }}
+        run: node deploy/ctl.mjs wait-live "$COMMIT"

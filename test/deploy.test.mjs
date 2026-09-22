@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
+import { selfBuild, deployPlan, markGood, cleanExit, takeRollback, deployOutcome, pendingAfter, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -61,12 +61,29 @@ test('markGood / takeRollback: the launcher’s files in the state dir', () => {
   assert.equal(takeRollback(dir), null) // read once
 })
 
-test('deployOutcome: live, rolled back, or not what was asked — said to whoever asked', () => {
+test('deployOutcome: live (on trial), rolled back, or not what was asked — said to whoever asked', () => {
   const pending = { from: A, to: B, by: 'root' }
   assert.equal(deployOutcome({ pending: null, running: B }), null)
-  assert.equal(deployOutcome({ pending, running: B }), '@root ✅ `bbbbbbb` is live.')
-  assert.match(deployOutcome({ pending, running: A, rollback: { from: B, to: A } }), /^@root ⚠️ `bbbbbbb` didn't come up — it failed to start three times, so I rolled back to `aaaaaaa`\./)
+  assert.equal(deployOutcome({ pending, running: B }), '@root ✅ `bbbbbbb` is live. If it fails in the next 10 minutes, I roll it back.')
+  assert.equal(deployOutcome({ pending: { ...pending, live: true }, running: B }), null) // restarted during its trial: said already
+  assert.equal(deployOutcome({ pending: { ...pending, live: true }, running: A, rollback: { from: B, to: A } }), "@root ⚠️ `bbbbbbb` failed three times before its 10-minute trial was up, so I'm on `aaaaaaa` again. Fix it on `main` and `/deploy` again.")
+  assert.match(deployOutcome({ pending, running: A, rollback: { from: B, to: A, why: 'failed its pre-start check (src/main.mjs)' } }), /^@root ⚠️ `bbbbbbb` failed its pre-start check \(src\/main\.mjs\), so I'm on `aaaaaaa` again\./)
   assert.equal(deployOutcome({ pending, running: C }), "@root ⚠️ that deploy didn't take: I'm running `ccccccc`, not `bbbbbbb`.")
+})
+
+test('pendingAfter: a live deploy stays pending through its trial; a rollback or a miss ends it', () => {
+  const pending = { from: A, to: B, by: 'root' }
+  assert.deepEqual(pendingAfter({ pending, running: B }), { ...pending, live: true })
+  assert.equal(pendingAfter({ pending, running: A, rollback: { from: B, to: A } }), null)
+  assert.equal(pendingAfter({ pending, running: C }), null)
+  assert.equal(pendingAfter({ pending: null, running: B }), null)
+})
+
+test('cleanExit: a drained restart resets the launcher’s count — only crashes add up to a rollback', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'exit-'))
+  writeFileSync(path.join(dir, 'boot.json'), JSON.stringify({ commit: A, tries: 2 }))
+  cleanExit(dir, A)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, 'boot.json'), 'utf8')), { commit: A, tries: 0 })
 })
 
 test('sensitiveFiles: the bot’s trust boundary — not its tests, docs or other code', () => {

@@ -15,6 +15,12 @@
 //                                     hand over the push App (App ID + private key file) the
 //                                     same way; PR writing starts with the next write turn
 //   node deploy/ctl.mjs admins you,… set the bot's admins (replaces BOT_ADMINS) and restart
+//   node deploy/ctl.mjs hook          install the post-merge gate (deploy/post-merge.sh) in the
+//                                     controller's checkout; a pull never replaces it
+//   node deploy/ctl.mjs rollback <sha> run an earlier build of the tracked branch until the next
+//                                     restart or /deploy — works when the controller itself doesn't
+//   node deploy/ctl.mjs wait-live <sha> wait (25 min at most: running turns finish first) for
+//                                     build <sha> to start and go live
 import { readFileSync } from 'node:fs'
 import { boxlite } from '../src/boxlite.mjs'
 
@@ -79,7 +85,43 @@ if (cmd === 'status') {
   }
   const r = await sh("umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/bot-admins && pkill -f 'botlite/src/mai[n].mjs' && echo restarting", `${logins.join(',')}\n`)
   console.log(r.code === 0 ? `admins: ${logins.map((l) => `@${l}`).join(' ')} — the controller restarts to apply them` : `failed: ${r.out}`)
+} else if (cmd === 'hook') {
+  const script = readFileSync(new URL('./post-merge.sh', import.meta.url), 'utf8')
+  const r = await sh('cat > ~/botlite/.git/hooks/post-merge && chmod +x ~/botlite/.git/hooks/post-merge && echo installed', script)
+  console.log(r.code === 0 ? 'post-merge gate installed in the controller checkout' : `failed: ${r.out}`)
+} else if (cmd === 'rollback') {
+  if (!/^[0-9a-f]{7,40}$/.test(arg || '')) {
+    console.error('usage: node deploy/ctl.mjs rollback <commit sha on the tracked branch>')
+    process.exit(2)
+  }
+  // Only a commit the tracked branch already has: this runs what was merged, never anything else.
+  const r = await sh(`cd ~/botlite && git fetch --quiet origin && b="$(cat ~/.botlite/branch 2>/dev/null || echo "\${BOTLITE_REF:-main}")" && git merge-base --is-ancestor ${arg} "origin/$b" && git checkout --quiet --detach ${arg} && echo "running $(git rev-parse --short HEAD), from $b — restart or /deploy to go back to its tip" && { pkill -f 'botlite/src/mai[n].mjs' || true; }`)
+  console.log(r.code === 0 ? r.out : `failed (is ${arg} on the tracked branch?): ${r.out}`)
+  if (r.code !== 0) process.exit(1)
+} else if (cmd === 'wait-live') {
+  const sha = (arg || '').slice(0, 7)
+  if (!/^[0-9a-f]{7}$/.test(sha)) {
+    console.error('usage: node deploy/ctl.mjs wait-live <commit sha>')
+    process.exit(2)
+  }
+  // Live: the boot loop's latest start is that build, and it has said "live as" since. Not just any
+  // start of it in the log, which an earlier run of the same commit would fake. A restart lets
+  // running turns finish first (JOB_TIMEOUT_MIN, 20, at most), so this waits up to 25 minutes.
+  const live = `awk -v want='starting controller (${sha}' 'index($0, "starting controller (") { on = (index($0, want) > 0); up = 0 } on && index($0, "live as @") { up = 1 } END { exit !(on && up) }' ~/.botlite/controller.log`
+  for (let i = 0; i < 100; i++) {
+    if ((await sh(live)).code === 0) {
+      console.log(`live on ${sha}`)
+      process.exit(0)
+    }
+    await new Promise((r) => setTimeout(r, 15_000))
+  }
+  // Only the boot story: this runs in a public Actions log, and the log also holds things like a
+  // device-login code, which anyone could approve with their own ChatGPT account.
+  const story = "starting controller \\(|controller exited \\(|gate: |launcher: |failed to go live|rolled back|git pull failed|live as @|^[A-Za-z]*Error( \\[[A-Z_]+\\])?: |^file://"
+  console.log((await sh(`tail -n 400 ~/.botlite/controller.log | grep -E '${story}' | tail -n 30`)).out)
+  console.error(`not live on ${sha} after 25 minutes`)
+  process.exit(1)
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | wait-live <sha>')
   process.exit(2)
 }
