@@ -447,8 +447,9 @@ clone or worktree (requires Git, Bash, jq, and Perl):
 ```
 
 This configures local Git hooks and refreshes the shared guidance in `AGENTS.md`.
-The repository profile in `.agent-tooling/profile.json` follows tooling `main`
-and declares `npm test`. Host plugins require installation in the host.
+Codex and Claude Code bootstrap the plugin when opening a trusted repository;
+follow the host's prompts to load it in a new task/session. The repository profile
+in `.agent-tooling/profile.json` follows tooling `main` and declares `npm test`.
 
 ```bash
 npm test                 # offline: no network, BoxLite, Slack or model
