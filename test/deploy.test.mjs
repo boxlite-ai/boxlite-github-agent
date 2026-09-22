@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { selfBuild, deployPlan, markGood, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
+import { selfBuild, deployPlan, markGood, goodBuild, TRIAL_TURN, trialTurnFailure, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -50,10 +50,12 @@ test('deployPlan: the commits on the branch since the running build, as GitHub c
   assert.deepEqual(await deployPlan({ gh: same, build: { repo: 'acme/bot', commit: A, ref: 'main' } }), { from: A, to: A, status: 'identical', commits: [] })
 })
 
-test('markGood / takeRollback: the launcher’s files in the state dir', () => {
+test('markGood / goodBuild / takeRollback: the launcher’s files in the state dir', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'good-'))
+  assert.equal(goodBuild(dir), null) // none yet: every build runs its trial turn
   writeFileSync(path.join(dir, 'boot.json'), JSON.stringify({ commit: A, tries: 2 }))
   markGood(dir, A)
+  assert.equal(goodBuild(dir), A)
   assert.equal(existsSync(path.join(dir, 'boot.json')), false) // tries reset
   assert.equal(JSON.parse(readFileSync(path.join(dir, 'good-build.json'), 'utf8')).commit, A)
   assert.equal(takeRollback(dir), null)
@@ -107,6 +109,17 @@ test('pendingAfter: a live deploy stays pending through its trial; a rollback or
   assert.equal(pendingAfter({ pending, running: A, rollback: { from: B, to: A, why: 'failed its pre-start check (src/main.mjs)' } }), null)
   assert.equal(pendingAfter({ pending, running: C }), null)
   assert.equal(pendingAfter({ pending: null, running: B }), null)
+})
+
+test('trial turn: any answer shows turns run; none fails the trial, saying why — and the request never looks like anyone’s', () => {
+  assert.equal(trialTurnFailure({ message: 'OK' }), null)
+  assert.equal(trialTurnFailure({ message: 'OK — the build works.' }), null) // any answer proves the path works
+  assert.equal(trialTurnFailure({ message: '', error: 'no answer (exit 1): runner: SyntaxError: Unexpected token' }), "couldn't run a turn in its trial (no answer (exit 1): runner: SyntaxError: Unexpected token)")
+  assert.equal(trialTurnFailure({ message: null, error: null }), "couldn't run a turn in its trial (no answer)")
+  assert.equal(trialTurnFailure(undefined), "couldn't run a turn in its trial (no answer)")
+  assert.ok(trialTurnFailure({ error: 'x'.repeat(500) }).length < 220) // it goes into the thread and the log
+  assert.equal(TRIAL_TURN.number, 0) // no issue has number 0: the turn's thread is the bot's own, and nobody's
+  assert.match(TRIAL_TURN.prompt, /not a request from anyone/)
 })
 
 test('cleanExit: a drained restart resets the launcher’s count — only crashes add up to a rollback', () => {
