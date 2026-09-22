@@ -46,3 +46,9 @@ export function takeQuota(state, login, limit, now = new Date()) {
   state.usage[login] = { day, count: u.count + 1 }
   return true
 }
+
+/** Requests `login` has left today — yesterday's count no longer applies after UTC midnight. */
+export function quotaLeft(state, login, limit, now = new Date()) {
+  const u = state.usage[login]
+  return u?.day === now.toISOString().slice(0, 10) ? Math.max(0, limit - u.count) : limit
+}

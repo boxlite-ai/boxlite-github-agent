@@ -26,7 +26,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { github } from './github.mjs'
 import { poll, requestsFrom, markRead, standing } from './mentions.mjs'
-import { loadState, saveState, takeQuota } from './state.mjs'
+import { loadState, saveState, takeQuota, quotaLeft } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
 import { runTurn } from './session.mjs'
@@ -302,7 +302,7 @@ async function handle(req) {
 /** A command (access.mjs): answered by the controller itself — no box, no model. */
 async function command(req, cmd) {
   const access = writeAccess({ state, admins, req, ready: Boolean(await loadPushApp()) })
-  const left = cfg.dailyLimit - (state.usage[req.author]?.count ?? 0)
+  const left = admins.has(req.userId) ? null : quotaLeft(state, req.author, cfg.dailyLimit)
   const models = () => codexModels({ login: chatgpt, clientVersion: CODEX_VERSION })
   const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, models, defaults: { model: cfg.model, effort: cfg.effort }, access, left, limit: cfg.dailyLimit })
   await persist()
@@ -313,8 +313,8 @@ function accept(req, via = 'poll') {
   if (draining) return // not marked seen: the next controller picks it up
   state.seen.add(req.id) // at most once: a crash mid-run must not produce a second reply later
   const cmd = parseCommand(req.body, cfg.login)
-  // An admin's command is never over the limit: `/pause` has to work on a busy day.
-  if (!(cmd && admins.has(req.userId)) && !takeQuota(state, req.author, cfg.dailyLimit)) {
+  // Admins run the bot: no daily limit for them, for requests or commands.
+  if (!admins.has(req.userId) && !takeQuota(state, req.author, cfg.dailyLimit)) {
     const usage = state.usage[req.author]
     log(`@${req.author} is over today's limit`)
     if (!usage.notified) {

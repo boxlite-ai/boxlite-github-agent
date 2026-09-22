@@ -140,6 +140,12 @@ test('runCommand /model: shows the model and what the backend offers; sets one o
   assert.match(await runCommand({ name: 'model', arg: 'gpt-6-astra' }, withModels(state, { req: req() })), /only this bot's admins can use `\/model`/)
 })
 
+test('helpText: an admin has no daily limit', () => {
+  const text = helpText({ login: 'boxliteai', req: req({ userId: 1, author: 'root' }), access: { ok: true, why: 'x' }, isAdmin: true, left: null, limit: 20 })
+  assert.match(text, /No daily request limit: you run this bot\.$/)
+  assert.doesNotMatch(text, /requests left today/)
+})
+
 test('helpText: says which model turns run on', async () => {
   const help = await runCommand({ name: 'help', arg: '' }, withModels({ grants: {}, codex: { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: 'T' } }, { req: req() }))
   assert.match(help, /\*\*Model:\*\* `gpt-6-astra` at `xhigh` effort\./)

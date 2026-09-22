@@ -153,7 +153,7 @@ The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `C
 | `BOTLITE_REF` | `main` | the branch the controller runs |
 | `SESSION_IMAGE` / `SESSION_CPUS` / `SESSION_MEMORY_MIB` | `node` / `2` / `4096` | session boxes |
 | `MAX_CONCURRENT` | `3` | turns running at once |
-| `DAILY_LIMIT_PER_USER` | `20` | requests per GitHub user per UTC day |
+| `DAILY_LIMIT_PER_USER` | `20` | requests per GitHub user per UTC day; the bot's admins have no limit |
 | `JOB_TIMEOUT_MIN` | `20` | wall-clock limit of one turn |
 | `BOX_TTL_DAYS` | `3` | a stopped session box is deleted after this |
 | `PORT` / `PUBLIC_URL` | `8788` / looked up | the proxy's port and public origin |
