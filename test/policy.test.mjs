@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mayUseSlack as mayUse, isSlackAdmin, slackPrAllowed, SLACK_PR_REPOS } from '../src/policy.mjs'
+import { mayUseSlack as mayUse, isSlackAdmin, slackPrAllowed, prTargets, SLACK_PR_REPOS } from '../src/policy.mjs'
 
 // What any access policy must keep true. Add the cases that pin down yours — members, guests,
 // Slack Connect — next to these.
@@ -35,6 +35,13 @@ test('TOOLS: every service lists reads and writes as tool names, and nothing is 
   }
 })
 
+test('TOOLS as shipped: new things and comments — nothing that deletes, moves, shares or overwrites', async () => {
+  const { TOOLS } = await import('../src/policy.mjs')
+  const writes = Object.fromEntries(Object.entries(TOOLS).filter(([, t]) => t.write.length).map(([s, t]) => [s, t.write]))
+  assert.deepEqual(writes, { linear: ['save_comment', 'save_issue'], notion: ['notion-create-comment', 'notion-create-pages'] })
+  for (const tool of Object.values(writes).flat()) assert.doesNotMatch(tool, /delete|move|share|trash|update|duplicate|copy/, tool)
+})
+
 test('mayUse (members only): members of the workspace or its Grid org — not guests, outsiders, or shared channels', () => {
   const grid = { teamId: 'T1', enterpriseId: 'E1' }
   const ok = (user, h = home, where = channel) => mayUse(user, h, where).ok
@@ -62,5 +69,12 @@ test('slackPrAllowed: owner/name or owner/*, any case — never another owner, n
   const rules = ['boxlite-ai/*', 'acme/app']
   for (const repo of ['boxlite-ai/boxlite', 'BoxLite-AI/Boxlite-Github-Agent', 'acme/app', 'ACME/App']) assert.equal(slackPrAllowed(repo, rules), true, repo)
   for (const repo of ['acme/app2', 'acme/other', 'boxlite-ai-evil/x', 'someone/boxlite-ai', 'boxlite/ai', '']) assert.equal(slackPrAllowed(repo, rules), false, repo)
-  assert.deepEqual(SLACK_PR_REPOS, ['boxlite-ai/*']) // as shipped: the team's own public repos
+  assert.equal(prTargets(rules), 'a public repo in boxlite-ai/*, acme/app')
+})
+
+test('slackPrAllowed: `*` is any repo — as shipped, since only a human merges the draft PR', () => {
+  assert.deepEqual(SLACK_PR_REPOS, ['*'])
+  for (const repo of ['boxlite-ai/boxlite', 'openai/codex', 'Some-One/x.y']) assert.equal(slackPrAllowed(repo), true, repo)
+  for (const repo of ['', 'no-slash', '/x', 'x/']) assert.equal(slackPrAllowed(repo), false, repo)
+  assert.equal(prTargets(), 'any public repo')
 })

@@ -53,7 +53,10 @@ export function gitPushHandler({ secret, jobs, upstream = 'https://github.com', 
     const claims = verifyJobToken(secret, /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1])
     const job = claims && jobs.live.get(claims.jti)
     const grant = job?.push
-    if (!grant) return send(res, 403, 'this turn may not push')
+    if (!grant) {
+      log(`git push (${claims?.thread ?? 'no valid job token'}): refused, ${!job ? 'no live turn' : 'no push granted'}`)
+      return send(res, 403, 'this turn may not push')
+    }
 
     let body
     if (push) {
@@ -79,6 +82,13 @@ export function gitPushHandler({ secret, jobs, upstream = 'https://github.com', 
         ...(push ? { 'content-type': 'application/x-git-receive-pack-request', accept: 'application/x-git-receive-pack-result' } : {}),
       }
       const up = await fetchImpl(`${upstream}/${repo}.git/${advert ? 'info/refs?service=git-receive-pack' : 'git-receive-pack'}`, { method: req.method, headers, body })
+      if (!up.ok) {
+        // GitHub's refusal is a short text git shows as `remote:` lines; the log keeps its first.
+        const text = await up.text().catch(() => '')
+        log(`${claims.thread}: GitHub answered ${up.status} to the push${advert ? "'s first step" : ''} to ${repo}: ${text.split('\n')[0].slice(0, 200) || '(no message)'}`)
+        res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'text/plain' })
+        return res.end(text)
+      }
       res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/octet-stream' })
       // A refused ref still comes back 200: git reports it inside the body (`ng <ref> <reason>`).
       let tail = Buffer.alloc(0)

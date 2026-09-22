@@ -115,6 +115,7 @@ test('trial turn: any answer shows turns run; none fails the trial, saying why â
   assert.equal(trialTurnFailure({ message: 'OK' }), null)
   assert.equal(trialTurnFailure({ message: 'OK â€” the build works.' }), null) // any answer proves the path works
   assert.equal(trialTurnFailure({ message: '', error: 'no answer (exit 1): runner: SyntaxError: Unexpected token' }), "couldn't run a turn in its trial (no answer (exit 1): runner: SyntaxError: Unexpected token)")
+  assert.equal(trialTurnFailure({ error: 'setup failed: x\n    at y (file:///z:1:7)' }), "couldn't run a turn in its trial (setup failed: x)") // one line: it goes public
   assert.equal(trialTurnFailure({ message: null, error: null }), "couldn't run a turn in its trial (no answer)")
   assert.equal(trialTurnFailure(undefined), "couldn't run a turn in its trial (no answer)")
   assert.ok(trialTurnFailure({ error: 'x'.repeat(500) }).length < 220) // it goes into the thread and the log

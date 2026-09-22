@@ -50,6 +50,7 @@ let github
 let proxy
 let base
 let opens = 0
+const logged = []
 const grant = () => ({ ref: STAGING, open: async () => (opens++, { repo: 'boxliteai/app', token: 'ghs_turn_token' }) })
 
 before(async () => {
@@ -59,8 +60,8 @@ before(async () => {
   writeFileSync(path.join(WORK, 'a.txt'), 'fix\n')
   execFileSync('git', ['-C', WORK, 'add', 'a.txt'])
   execFileSync('git', ['-C', WORK, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fix'])
-  github = await gitServer(path.join(root, 'github'))
-  proxy = http.createServer(gitPushHandler({ secret: SECRET, jobs, upstream: github.url, maxPushes: 3 }))
+  github = await gitServer(path.join(root, 'github'), { refuse: { '/boxliteai/locked.git': [403, 'Permission to boxliteai/locked.git denied to botlite-push[bot].\n'] } })
+  proxy = http.createServer(gitPushHandler({ secret: SECRET, jobs, upstream: github.url, maxPushes: 3, log: (l) => logged.push(l) }))
   await new Promise((r) => proxy.listen(0, '127.0.0.1', r))
   base = `http://127.0.0.1:${proxy.address().port}/git`
 })
@@ -124,4 +125,21 @@ test('gitPushHandler: no push without a live token of a write turn; fetches are 
   assert.equal(await call(t, '/git/git-receive-pack', 'POST'), 429)
   jobs.revoke(t)
   jobs.revoke(readOnly)
+})
+
+test('gitPushHandler: a refusal says why — to git, which shows it as `remote:` lines, and in the log', async () => {
+  // GitHub's own, e.g. the push App's token not allowed on that fork: passed back as it came.
+  const locked = jobs.issue(60_000, 'acme/app#7', { push: { ref: STAGING, open: async () => ({ repo: 'boxliteai/locked', token: 'ghs_turn_token' }) } })
+  const out = await push(locked, `HEAD:${STAGING}`)
+  assert.match(out, /remote: Permission to boxliteai\/locked\.git denied to botlite-push\[bot\]\.\n.*403/s)
+  assert.ok(logged.includes("acme/app#7: GitHub answered 403 to the push's first step to boxliteai/locked: Permission to boxliteai/locked.git denied to botlite-push[bot]."), logged.join('\n'))
+  jobs.revoke(locked)
+
+  // The controller's own: a turn that's over, or one that may not push.
+  assert.match(await push(locked, `HEAD:${STAGING}`), /remote: this turn may not push/)
+  const readOnly = jobs.issue(60_000, 'acme/app#8')
+  assert.match(await push(readOnly, `HEAD:${STAGING}`), /remote: this turn may not push/)
+  jobs.revoke(readOnly)
+  assert.ok(logged.includes('git push (acme/app#7): refused, no live turn'), logged.join('\n'))
+  assert.ok(logged.includes('git push (acme/app#8): refused, no push granted'), logged.join('\n'))
 })
