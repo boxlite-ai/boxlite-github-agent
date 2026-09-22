@@ -20,7 +20,8 @@ test('naming: one stable box, snapshot path and context key per thread', () => {
   assert.match(boxName('Acme.Corp/My_App.js#12'), /^botlite-gh-acme-corp-my-app-js-12-[0-9a-f]{16}$/)
   const long = boxName(`${'o'.repeat(39)}/${'r'.repeat(100)}#1234567`)
   assert.ok(long.length <= 63, long) // a DNS label's length, should names ever become hostnames
-  assert.match(long, /^botlite-gh-o{32}-[0-9a-f]{16}$/) // the words cut short, the hash whole
+  assert.match(long, /^botlite-gh-o{24}-1234567-[0-9a-f]{16}$/) // the repo cut short; the number and hash whole
+  assert.match(boxName('boxlite-ai/boxlite-github-agent#7'), /^botlite-gh-boxlite-ai-boxlite-github-agen-7-[0-9a-f]{16}$/)
   // Slack's words come with the thread (slack-events.mjs threadLabel); none, and it's the hash alone.
   const slackKey = 'T01/C01/1712345678.000100'
   assert.match(boxName(slackKey, { slack: true, label: 'dm-Alice-0922' }), /^botlite-slack-dm-alice-0922-[0-9a-f]{16}$/)

@@ -11,7 +11,7 @@ import path from 'node:path'
 
 const MAX_SEEN = 10_000 // comment ids to remember; older ones are far outside any re-read window
 const SLACK_THREAD_TTL_MS = 90 * 86_400_000 // a Slack thread quiet this long is forgotten; its next mention starts afresh
-const KNOWN = ['lastModified', 'seen', 'threads', 'usage', 'grants', 'paused', 'forks', 'codex', 'deploy', 'slack']
+const KNOWN = ['lastModified', 'polledAt', 'sweeps', 'seen', 'threads', 'usage', 'grants', 'paused', 'forks', 'codex', 'deploy', 'slack']
 
 /** Slack's memory, apart from GitHub's (slack-channel.mjs): the ids of both could collide. */
 const slackPart = (raw = {}) => ({
@@ -45,6 +45,8 @@ export async function loadState(file) {
   return {
     unknown, // written back untouched
     lastModified: raw.lastModified ?? null,
+    polledAt: raw.polledAt ?? null, // when the last poll that went through began: what came in before it, it saw
+    sweeps: raw.sweeps ?? {}, // "owner/repo#n" → { repo, number, since }: threads the next poll reads again (mentions.mjs)
     seen: new Set(raw.seen ?? []),
     threads: raw.threads ?? {}, // "owner/repo#n" → { user, sessionId, headSha, lastUsed }
     usage: raw.usage ?? {}, // github login → { day: 'YYYY-MM-DD', count }
@@ -64,8 +66,8 @@ export async function saveState(file, state, now = Date.now()) {
   s.seen = new Set([...s.seen].slice(-MAX_SEEN))
   for (const [key, t] of Object.entries(s.threads)) if (now - Date.parse(t.lastUsed) > SLACK_THREAD_TTL_MS) delete s.threads[key]
   const slack = { seen: [...s.seen], threads: s.threads, usage: s.usage, deferred: s.deferred }
-  const { lastModified, threads, usage, grants, paused, forks, codex, deploy } = state
-  const data = JSON.stringify({ ...state.unknown, lastModified, seen, threads, usage, grants, paused, forks, codex, deploy, slack })
+  const { lastModified, polledAt, sweeps, threads, usage, grants, paused, forks, codex, deploy } = state
+  const data = JSON.stringify({ ...state.unknown, lastModified, polledAt, sweeps, seen, threads, usage, grants, paused, forks, codex, deploy, slack })
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, data, { mode: 0o600 })

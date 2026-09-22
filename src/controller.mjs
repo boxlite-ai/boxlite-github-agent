@@ -38,7 +38,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { github } from './github.mjs'
-import { poll, requestsFrom, markRead, standing } from './mentions.mjs'
+import { poll, readThreads, sweep, standing } from './mentions.mjs'
 import { loadState, saveState, takeQuota, quotaLeft, importSlackState } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
@@ -281,6 +281,19 @@ async function confirmed(req) {
   return live && live.user?.login === req.author && live.body === req.body ? { ...req, userId: live.user.id, ...standing(live) } : null
 }
 
+/**
+ * The bot's comment in a thread. Commenting marks the thread read for the bot, which would hide a
+ * mention that came in since the last poll — so the next poll takes a second look (mentions.mjs).
+ */
+async function comment(req, text, opts) {
+  try {
+    return await reply(gh, req, text, opts)
+  } finally {
+    sweep(state.sweeps, req, state.polledAt ?? null)
+    persist()
+  }
+}
+
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
   return { headSha: pr.head.sha, baseRef: pr.base.ref, headRef: pr.head.ref, headRepo: pr.head.repo?.full_name ?? null }
@@ -364,16 +377,16 @@ async function handle(req) {
     persist()
     await req.ack // the 👀 always lands before the answer
     if (out.message) {
-      await reply(gh, req, note ? `${out.message}\n\n${note}` : out.message)
+      await comment(req, note ? `${out.message}\n\n${note}` : out.message)
       log(`${key}: answered @${req.author}${job.writes.length ? `, changed: ${tally(job.writes)}` : ''}`)
     } else {
       log(`${key}: no answer — ${out.error}`)
-      await reply(gh, req, `@${req.author} sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${note ? `\n\n${note}` : ''}`)
+      await comment(req, `@${req.author} sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${note ? `\n\n${note}` : ''}`)
     }
   } catch (e) {
     log(`${key}: ${e.stack || e.message}`)
     if (plan?.token) pushApp.revoke(plan.token).catch(() => {})
-    await reply(gh, req, `@${req.author} sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
+    await comment(req, `@${req.author} sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
   }
 }
 
@@ -386,7 +399,7 @@ async function command(req, cmd) {
   const before = state.deploy
   const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, models, deploy, defaults: { model: cfg.model, effort: cfg.effort }, access, left, limit: cfg.dailyLimit })
   await persist()
-  await reply(gh, req, text, { footer: false })
+  await comment(req, text, { footer: false })
   // Only a deploy this /deploy recorded: not one it refused, nor the last one, still on its trial.
   if (state.deploy && state.deploy !== before && !restarting) restart()
 }
@@ -420,7 +433,7 @@ function accept(req, via = 'poll') {
     log(`@${req.author} is over today's limit`)
     if (!usage.notified) {
       usage.notified = true
-      reply(gh, req, `@${req.author} you've reached today's limit of ${cfg.dailyLimit} requests — it resets at 00:00 UTC.`).catch(() => {})
+      comment(req, `@${req.author} you've reached today's limit of ${cfg.dailyLimit} requests — it resets at 00:00 UTC.`).catch(() => {})
     }
     return
   }
@@ -438,18 +451,10 @@ function accept(req, via = 'poll') {
 
 async function tick() {
   if (draining) return 5 // don't read (and mark read) notifications we won't handle
+  const polledAt = new Date().toISOString()
   const { notifications, lastModified, interval } = await poll(gh, state.lastModified)
-  let clean = true
-  for (const n of notifications) {
-    try {
-      for (const req of await requestsFrom(gh, n, { login: cfg.login, seen: state.seen })) accept(req)
-      await markRead(gh, n.id)
-    } catch (e) {
-      clean = false // leave the cursor, so the next poll sees this notification again
-      log(`notification ${n.id} (${n.repository?.full_name}): ${e.message}`)
-    }
-  }
-  if (clean) state.lastModified = lastModified
+  if (await readThreads(gh, { notifications, sweeps: state.sweeps, login: cfg.login, seen: state.seen, accept, log })) state.lastModified = lastModified
+  state.polledAt = polledAt // what came in before this, the poll saw
   await persist()
   return interval
 }
@@ -568,7 +573,7 @@ const deploying = state.deploy
 const outcome = deployOutcome({ pending: deploying, running: build.commit, rollback })
 if (outcome) {
   log(`deploy: ${outcome}`)
-  await reply(gh, deploying.reply, outcome, { footer: false }).catch((e) => log(`deploy: couldn't report back: ${e.message}`))
+  await comment(deploying.reply, outcome, { footer: false }).catch((e) => log(`deploy: couldn't report back: ${e.message}`))
 }
 if (deploying) {
   state.deploy = pendingAfter({ pending: deploying, running: build.commit, rollback })

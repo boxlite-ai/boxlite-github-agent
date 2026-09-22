@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mentions, poll, requestsFrom } from '../src/mentions.mjs'
+import { mentions, poll, requestsFrom, readThreads, sweep } from '../src/mentions.mjs'
 
 test('mentions: addressed to the bot, case-insensitive, anywhere in the text', () => {
   for (const body of ['@botlite review this', 'hey @botlite, why?', 'line one\n@BotLite explain', '(@botlite)']) {
@@ -112,4 +112,98 @@ test('requestsFrom: private repos and non-issue subjects are skipped without API
   assert.deepEqual(await requestsFrom(gh, notification({ repository: { full_name: 'acme/secret', private: true } }), { login: 'botlite', seen: new Set(), now: NOW }), [])
   assert.deepEqual(await requestsFrom(gh, notification({ subject: { type: 'Release', url: 'x' } }), { login: 'botlite', seen: new Set(), now: NOW }), [])
   assert.equal(gh.calls.length, 0)
+})
+
+// A thread on GitHub, as the bot's token sees it: every call is logged, in order. `fail` maps a
+// path fragment to the status its calls fail with — or to [status, how many times].
+function liveThread({ comments = [], fail = {} } = {}) {
+  const calls = []
+  const failures = Object.fromEntries(Object.entries(fail).map(([what, f]) => [what, Array.isArray(f) ? { status: f[0], left: f[1] } : { status: f, left: Infinity }]))
+  const issue = { id: 7, title: 'Fix it', body: 'old', user: user('alice'), state: 'open', html_url: 'u7', created_at: '2026-01-01T00:00:00Z' }
+  return {
+    calls,
+    json: async (method, path) => {
+      calls.push(`${method} ${path}`)
+      for (const [what, f] of Object.entries(failures)) {
+        if (!path.includes(what) || f.left <= 0) continue
+        f.left--
+        throw Object.assign(new Error(`${method} ${path}: ${f.status}`), { status: f.status })
+      }
+      if (method === 'PATCH') return null
+      if (/\/issues\/\d+$/.test(path)) return issue
+      if (/\/issues\/\d+\/comments/.test(path)) return comments
+      throw new Error(`unexpected ${method} ${path}`)
+    },
+  }
+}
+const mention = (id, at, who = 'bob') => ({ id, body: `@botlite ${id}?`, user: user(who), created_at: at, updated_at: at, html_url: `c${id}` })
+const issueNote = (over = {}) => notification({ subject: { type: 'Issue', url: 'https://api.github.com/repos/acme/app/issues/7' }, ...over })
+
+test('readThreads: a thread is marked read before its comments are read, so one that lands meanwhile comes back', async () => {
+  const gh = liveThread({ comments: [mention(10, '2026-09-21T11:30:00Z')] })
+  const accepted = []
+  const sweeps = {}
+  const clean = await readThreads(gh, { notifications: [issueNote()], sweeps, login: 'botlite', seen: new Set(), accept: (r) => accepted.push(r.id) })
+  assert.equal(clean, true)
+  assert.equal(gh.calls[0], 'PATCH /notifications/threads/n1') // before any read: a later comment notifies again
+  assert.deepEqual(accepted, ['ic:10'])
+  assert.deepEqual(sweeps, {})
+})
+
+test('readThreads: a thread that can’t be marked read is left for the next poll; one marked but not read gets a second look', async () => {
+  const unmarked = liveThread({ comments: [mention(10, '2026-09-21T11:30:00Z')], fail: { '/notifications/threads/': 502 } })
+  const logs = []
+  assert.equal(await readThreads(unmarked, { notifications: [issueNote()], sweeps: {}, login: 'botlite', seen: new Set(), accept: () => assert.fail('nothing is read'), log: (l) => logs.push(l) }), false)
+  assert.equal(unmarked.calls.length, 1) // not read at all: still unread, and the cursor stays
+  assert.match(logs[0], /notification n1 \(acme\/app\): .*502/)
+
+  // Reading fails twice: in the poll, and in the second look the same poll takes straight after.
+  const gh = liveThread({ comments: [mention(10, '2026-09-21T11:30:00Z')], fail: { '/comments': [502, 2] } })
+  const sweeps = {}
+  const accepted = []
+  const seen = new Set()
+  const read = { sweeps, login: 'botlite', seen, accept: (r) => (seen.add(r.id), accepted.push(r.id)), log: () => {} }
+  assert.equal(await readThreads(gh, { ...read, notifications: [issueNote()] }), true)
+  assert.deepEqual(accepted, []) // not read, and the thread is marked read: no poll would list it again…
+  assert.deepEqual(sweeps, { 'acme/app#7': { repo: 'acme/app', number: 7, since: '2026-09-21T11:00:00Z' } }) // …so it keeps its second look
+  await readThreads(gh, { ...read, notifications: [] })
+  assert.deepEqual(accepted, ['ic:10'])
+  assert.deepEqual(sweeps, {})
+})
+
+test('sweep: after the bot comments, the mentions its comment hid are read at the next poll — from before the last one', async () => {
+  // The chaos run's lost /deploy: the bot's "✅ live" marked the thread read after the mention came in, before the next poll.
+  const polledAt = '2026-09-22T10:20:09Z'
+  const gh = liveThread({ comments: [mention(42, '2026-09-22T10:20:16Z', 'dorian'), mention(41, '2026-09-22T10:10:00Z', 'dorian')] })
+  const seen = new Set(['ic:41']) // handled long ago
+  const sweeps = {}
+  sweep(sweeps, { repo: 'acme/app', number: 7 }, polledAt)
+  const accepted = []
+  await readThreads(gh, { notifications: [], sweeps, login: 'botlite', seen, accept: (r) => accepted.push(r.id) })
+  assert.deepEqual(accepted, ['ic:42'])
+  assert.ok(gh.calls.some((c) => c.includes('/issues/7/comments?since=2026-09-22T10:15:09.000Z'))) // the poll's time − 5 min
+  assert.deepEqual(sweeps, {})
+})
+
+test('sweep: the earliest look back wins — none at all means a day — and a thread that is gone is dropped', async () => {
+  const sweeps = {}
+  const t = { repo: 'acme/app', number: 7 }
+  sweep(sweeps, t, '2026-09-22T10:20:00Z')
+  sweep(sweeps, t, '2026-09-22T10:10:00Z')
+  sweep(sweeps, t, '2026-09-22T10:30:00Z')
+  assert.equal(sweeps['acme/app#7'].since, '2026-09-22T10:10:00Z')
+  sweep(sweeps, t, null)
+  assert.equal(sweeps['acme/app#7'].since, null)
+  sweep(sweeps, t, '2026-09-22T10:40:00Z')
+  assert.equal(sweeps['acme/app#7'].since, null)
+
+  const gone = liveThread({ fail: { '/issues/7': 404 } })
+  const logs = []
+  await readThreads(gone, { notifications: [], sweeps, login: 'botlite', seen: new Set(), accept: () => {}, log: (l) => logs.push(l) })
+  assert.deepEqual(sweeps, {}) // not there any more (or not ours to read): no second look forever
+  assert.match(logs[0], /second look at acme\/app#7: .*404/)
+  const flaky = liveThread({ fail: { '/issues/7': 502 } })
+  sweep(sweeps, t, null)
+  await readThreads(flaky, { notifications: [], sweeps, login: 'botlite', seen: new Set(), accept: () => {}, log: () => {} })
+  assert.deepEqual(Object.keys(sweeps), ['acme/app#7']) // a passing failure: next time, again
 })

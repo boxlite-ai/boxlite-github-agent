@@ -55,10 +55,12 @@ export function slackThreadKey(req) {
  * are kept with the thread, since they come from names that can change.
  */
 export function boxName(key, { slack = false, label } = {}) {
-  const words = slack ? String(label ?? '') : key.replace('#', '-')
-  const slug = words.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 32).replace(/-+$/, '')
-  return `botlite-${slack ? 'slack' : 'gh'}-${slug ? `${slug}-` : ''}${createHash('sha256').update(key).digest('hex').slice(0, 16)}`
+  // A GitHub thread's words end in its number, kept whole: it's what tells one repo's threads apart.
+  const words = slack ? slug(String(label ?? ''), 32) : ((repo, n) => [slug(repo, 31 - n.length), n].filter(Boolean).join('-'))(...key.split('#'))
+  return `botlite-${slack ? 'slack' : 'gh'}-${words ? `${words}-` : ''}${createHash('sha256').update(key).digest('hex').slice(0, 16)}`
 }
+/** Lower-case letters, digits and single hyphens, at most `max` long — accents dropped, not the letters. */
+const slug = (s, max) => s.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, max).replace(/-+$/, '')
 /** The thread's subdirectory of its volume, e.g. /vol/sessions/acme/app/7 or /vol/sessions/T01/C02/1712345678.000100. */
 export const snapshotPath = (key) => `${VOLUME_PATH}/sessions/${key.replace('#', '/')}/context.sealed`
 /** Per-thread snapshot key: only this thread's box is ever handed it. */

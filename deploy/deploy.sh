@@ -131,7 +131,8 @@ while true; do
   git -C botlite pull --quiet --ff-only || echo "git pull failed; running what is checked out"
   echo "$(date -u +%FT%TZ) starting controller ($(git -C botlite rev-parse --short HEAD))"
   "${NODE[@]}" botlite/src/main.mjs
-  echo "$(date -u +%FT%TZ) controller exited ($?), restarting in 10s"; sleep 10
+  code=$? # taken now: inside the echo, $(date) would have reset it to 0
+  echo "$(date -u +%FT%TZ) controller exited ($code), restarting in 10s"; sleep 10
 done'
 
 # Public inbound: session boxes reach the controller's model proxy over its preview URL (every
