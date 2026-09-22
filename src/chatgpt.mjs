@@ -2,7 +2,7 @@
 //
 // Session boxes never see it. Their Codex authenticates to the controller's proxy with a per-job
 // token shaped like a ChatGPT access token — an HS256 JWT the controller signs; Codex decodes JWT
-// claims but never verifies them (checked against 0.150.0) — and the proxy swaps in the real one.
+// claims but never verifies them (checked against 0.155.1) — and the proxy swaps in the real one.
 // The controller also keeps the login alive: it refreshes the access token the way Codex does
 // (same endpoint and OAuth client), and persists the rotated tokens on its own disk.
 import { spawn } from 'node:child_process'
@@ -10,7 +10,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 
-export const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann' // Codex CLI's OAuth client (in the 0.150.0 binary)
+export const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann' // Codex CLI's OAuth client (in the 0.150.0 and 0.155.1 binaries)
 const TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const REFRESH_AFTER_MS = 7 * 86_400_000 // Codex refreshes after 8 days; stay a day ahead
 export const BOX_ACCOUNT_ID = 'botlite' // what boxes are told; the proxy sends the real one
@@ -58,6 +58,26 @@ export function jobTokens(secret) {
       live.delete(jti)
     },
   }
+}
+
+/**
+ * The models the Codex backend offers the bot's login at a Codex version — each with the reasoning
+ * efforts it takes — so `/model` can refuse one no turn could run on. The backend lists a model only
+ * to clients at or above its minimal version.
+ * @returns {Promise<{ slug: string, efforts: string[], listed: boolean }[]>}
+ */
+export async function codexModels({ login, clientVersion, upstream = 'https://chatgpt.com', fetchImpl = fetch }) {
+  const get = () => {
+    const t = login.get()
+    return fetchImpl(`${upstream}/backend-api/codex/models?client_version=${encodeURIComponent(clientVersion)}`, { headers: { authorization: `Bearer ${t.access_token}`, 'chatgpt-account-id': t.account_id } })
+  }
+  let res = await get()
+  if (res.status === 401) {
+    await login.refresh()
+    res = await get()
+  }
+  if (!res.ok) throw new Error(`the Codex backend answered ${res.status}`)
+  return ((await res.json()).models ?? []).map((m) => ({ slug: m.slug, efforts: (m.supported_reasoning_levels ?? []).map((l) => l.effort), listed: m.visibility === 'list' }))
 }
 
 /** The link and one-time code in `codex login --device-auth` output (colour codes stripped). */

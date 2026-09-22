@@ -31,7 +31,8 @@ export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.c
     res.on('close', () => abort.abort()) // the box hung up → stop the upstream stream
     try {
       let body = req.method === 'POST' ? await readAll(req) : undefined
-      if (body && model) body = pinModel(body, model)
+      const pinned = typeof model === 'function' ? model() : model // an admin's /model applies from the next request
+      if (body && pinned) body = pinModel(body, pinned)
       const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !DROP_REQ.has(k)))
       const forward = () => {
         const t = login.get()

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMMANDS, parseCommand, writeAccess, helpText, runCommand } from '../src/access.mjs'
+import { COMMANDS, parseCommand, writeAccess, helpText, runCommand, modelOf } from '../src/access.mjs'
 
 test('parseCommand: `@bot /word` at the start of a comment, or a comment that is only `@bot help`', () => {
   assert.deepEqual(parseCommand('@boxliteai /add @alice', 'boxliteai'), { name: 'add', arg: '@alice' })
@@ -62,7 +62,7 @@ test('helpText: what this person can do here; admin commands only for admins; th
 
   const denied = helpText({ login: 'boxliteai', req: req(), access: { ok: false, why: 'only maintainers of this repo and people an admin added can' }, isAdmin: true, left: 0, limit: 20 })
   assert.match(denied, /\*\*PRs:\*\* you can't ask me for PRs in Acme\/App: only maintainers of this repo and people an admin added can\./)
-  for (const c of COMMANDS.filter((x) => x.admin)) assert.match(denied, new RegExp(`\`@boxliteai ${c.usage.replace('/', '\\/')}\` — ${c.does}`))
+  for (const c of COMMANDS.filter((x) => x.admin)) assert.ok(denied.includes(`\`@boxliteai ${c.usage}\` — ${c.does}`), c.name)
 })
 
 const lookup = async (login) => ({ bob: { id: 77, login: 'Bob' } })[login.toLowerCase()] ?? null
@@ -108,4 +108,50 @@ test('runCommand: /pause and /resume; /help and unknown words answer with the he
   const unknown = await runCommand({ unknown: 'ad' }, ctx(state))
   assert.match(unknown, /^I don't know `\/ad`\.\n\n@root mention me/)
   assert.match(unknown, /\*\*Admin:\*\*/) // root is
+})
+
+const CATALOG = [
+  { slug: 'gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], listed: true },
+  { slug: 'gpt-5.6-sol', efforts: ['low', 'medium', 'high', 'xhigh'], listed: true },
+  { slug: 'gpt-reserve', efforts: ['low', 'medium'], listed: false },
+]
+const withModels = (state, over = {}) => ctx(state, { models: async () => CATALOG, defaults: { model: 'gpt-5.6-sol', effort: null }, ...over })
+
+test('runCommand /model: shows the model and what the backend offers; sets one only if it is offered', async () => {
+  const state = { grants: {}, paused: null, codex: null }
+  const shown = await runCommand({ name: 'model', arg: '' }, withModels(state))
+  assert.match(shown, /^@root turns run on `gpt-5\.6-sol`\.\n\nAvailable: `gpt-6-astra` \(low, medium, high, xhigh, max, ultra\) · `gpt-5\.6-sol` \(low, medium, high, xhigh\)$/) // hidden models aren't listed
+
+  assert.equal(await runCommand({ name: 'model', arg: 'gpt-6-astra xhigh' }, withModels(state)), '@root ✅ turns now run on `gpt-6-astra` at `xhigh` effort.')
+  assert.deepEqual(state.codex, { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: '2026-09-22T10:00:00.000Z' })
+  assert.deepEqual(modelOf(state, { model: 'gpt-5.6-sol' }), { model: 'gpt-6-astra', effort: 'xhigh' })
+  assert.match(await runCommand({ name: 'model', arg: '' }, withModels(state)), /turns run on `gpt-6-astra` at `xhigh` effort — set by @root on 2026-09-22\./)
+
+  assert.match(await runCommand({ name: 'model', arg: 'gpt-7' }, withModels(state)), /the backend doesn't offer `gpt-7` to this bot's Codex, so nothing changed\.\n\nAvailable: `gpt-6-astra`/)
+  assert.match(await runCommand({ name: 'model', arg: 'gpt-5.6-sol ultra' }, withModels(state)), /`gpt-5\.6-sol` doesn't offer `ultra` effort, so nothing changed — it has `low`, `medium`, `high`, `xhigh`\./)
+  const down = async () => {
+    throw new Error('the Codex backend answered 503')
+  }
+  assert.match(await runCommand({ name: 'model', arg: 'gpt-6-astra' }, withModels(state, { models: down })), /couldn't read the model list, so nothing changed: the Codex backend answered 503/)
+  assert.equal(state.codex.model, 'gpt-6-astra') // none of those changed it
+
+  assert.equal(await runCommand({ name: 'model', arg: 'default' }, withModels(state)), '@root ✅ turns are back on the default: `gpt-5.6-sol`.')
+  assert.equal(state.codex, null)
+  assert.match(await runCommand({ name: 'model', arg: 'gpt-6-astra' }, withModels(state, { req: req() })), /only this bot's admins can use `\/model`/)
+})
+
+test('helpText: says which model turns run on', async () => {
+  const help = await runCommand({ name: 'help', arg: '' }, withModels({ grants: {}, codex: { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: 'T' } }, { req: req() }))
+  assert.match(help, /\*\*Model:\*\* `gpt-6-astra` at `xhigh` effort\./)
+})
+
+test('runCommand /add: two at once on a repo with no grants yet both stick', async () => {
+  const state = { grants: {}, paused: null }
+  let release
+  const gate = new Promise((r) => (release = r))
+  const slowLookup = async (login) => (await gate, { carol: { id: 5, login: 'carol' }, dave: { id: 6, login: 'dave' } })[login]
+  const both = Promise.all([runCommand({ name: 'add', arg: '@carol' }, ctx(state, { lookup: slowLookup })), runCommand({ name: 'add', arg: '@dave' }, ctx(state, { lookup: slowLookup }))])
+  release()
+  await both
+  assert.deepEqual(Object.keys(state.grants['acme/app']).sort(), ['5', '6'])
 })

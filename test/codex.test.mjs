@@ -26,6 +26,15 @@ test('codexArgs: needs a proxy url, and refuses one that could break out of the 
   assert.throws(() => codexArgs({ ...base, proxyUrl: undefined }), /bad proxy url/)
 })
 
+test('codexArgs: a reasoning effort becomes model_reasoning_effort; neither it nor the model can inject config', () => {
+  const args = codexArgs({ ...base, model: 'gpt-6-astra', effort: 'xhigh' })
+  assert.ok(args.includes('model_reasoning_effort="xhigh"'))
+  assert.deepEqual(args.slice(args.indexOf('-m'), args.indexOf('-m') + 2), ['-m', 'gpt-6-astra'])
+  assert.equal(codexArgs(base).some((a) => a.startsWith('model_reasoning_effort')), false) // unset: the model's default
+  assert.throws(() => codexArgs({ ...base, effort: 'high" , model_provider = "evil' }), /bad reasoning effort/)
+  assert.throws(() => codexArgs({ ...base, model: 'x -c evil' }), /bad model/)
+})
+
 const run = (lines) => lines.map((l) => JSON.stringify(l)).reduce(applyEvent, newRun())
 
 test('applyEvent: the failed probe run — session id kept, turn failure reported', () => {

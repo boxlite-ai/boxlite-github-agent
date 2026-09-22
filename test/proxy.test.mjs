@@ -74,6 +74,24 @@ test('only the model endpoints go through — the rest of the ChatGPT backend is
   jobs.revoke(t)
 })
 
+test('the pinned model can be a getter: an admin’s /model applies from the next request', async () => {
+  let current = 'gpt-5.6-sol'
+  const live = createProxy({ login: { get: () => ({ access_token: 'at-fresh', account_id: 'acct-real' }), refresh: async () => {} }, secret: SECRET, jobs, upstream: `http://127.0.0.1:${upstream.address().port}`, model: () => current })
+  await new Promise((r) => live.listen(0, '127.0.0.1', r))
+  try {
+    const t = jobs.issue(60_000, 'acme/app#9')
+    const post = () => fetch(`http://127.0.0.1:${live.address().port}/backend-api/codex/responses`, { method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'o3-pro', input: 'hi' }) }).then((r) => r.text())
+    await post()
+    assert.equal(seen.at(-1).body.model, 'gpt-5.6-sol')
+    current = 'gpt-6-astra'
+    await post()
+    assert.equal(seen.at(-1).body.model, 'gpt-6-astra')
+    jobs.revoke(t)
+  } finally {
+    live.close()
+  }
+})
+
 test('/git/ goes to the git push route when there is one, and is a 404 like the rest otherwise', async () => {
   const hits = []
   const withGit = createProxy({ login, secret: SECRET, jobs, upstream: 'http://127.0.0.1:9', git: (req, res) => (hits.push(req.url), res.writeHead(204).end()) })

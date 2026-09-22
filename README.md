@@ -66,6 +66,10 @@ next mention restores into a new one.
 | `@boxliteai /add @user` · `/remove @user` | admins | who else can ask for PRs in this repo |
 | `@boxliteai /list` | admins | who has been added here |
 | `@boxliteai /pause` · `/resume` | admins | stop or restart all PR writing |
+| `@boxliteai /model [model] [effort]` | admins | show, or set, the model and reasoning effort every turn runs on, e.g. `/model gpt-6-astra xhigh`; `/model default` undoes it |
+
+`/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
+pinned Codex, since a bad one would fail every turn.
 
 The controller answers these itself; Codex never sees them. Admin commands count only in a new,
 never-edited comment, because anyone with write access to a repo can edit other people's comments
@@ -138,13 +142,14 @@ Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart | admins 
 <summary>Settings</summary>
 
 The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `CODEX_MODEL`,
-`BOTLITE_REF` and `BOT_ADMINS` through.
+`CODEX_EFFORT`, `BOTLITE_REF` and `BOT_ADMINS` through.
 
 | Env | Default | |
 |---|---|---|
 | `BOT_ADMINS` | none | GitHub logins, comma-separated, who may ask for PRs anywhere and run the admin commands (`ctl admins` replaces it) |
 | `VOLUME` | `botlite-context` | the shared context volume |
-| `CODEX_MODEL` | Codex's default | model for every turn (also pinned by the proxy) |
+| `CODEX_MODEL` | Codex's default | model for every turn (also pinned by the proxy), until an admin's `/model` |
+| `CODEX_EFFORT` | the model's default | reasoning effort for every turn (`low` … `xhigh`, `max`, `ultra`, as the model allows), until `/model` |
 | `BOTLITE_REF` | `main` | the branch the controller runs |
 | `SESSION_IMAGE` / `SESSION_CPUS` / `SESSION_MEMORY_MIB` | `node` / `2` / `4096` | session boxes |
 | `MAX_CONCURRENT` | `3` | turns running at once |
@@ -168,7 +173,7 @@ permissions. A mention that arrives both ways is handled once.
 
 ```bash
 npm test                 # offline: no network, BoxLite or model
-BOTLITE_E2E=1 npm test   # + a real Codex turn through the proxy (needs codex 0.150.0)
+BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (needs codex 0.155.1)
 ```
 
 ## Limits
@@ -181,6 +186,7 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn through the proxy (needs codex 0.
 - **A personal ChatGPT plan serves everyone.** OpenAI's terms may not allow a consumer login to be
   used this way; an API key is the sanctioned route for a public service.
 - **Codex's private backend.** The model path depends on ChatGPT's Codex backend and Codex's login
-  format as of 0.150.0, which is pinned. `BOTLITE_E2E=1 npm test` checks it on upgrade.
+  format as of 0.155.1, which is pinned. `BOTLITE_E2E=1 npm test` checks it on upgrade. The
+  backend offers each model only from some Codex version on (`gpt-6-astra`: 0.153.0).
 - **Region.** The controller must reach `chatgpt.com` and `auth.openai.com` from a country OpenAI
   supports.

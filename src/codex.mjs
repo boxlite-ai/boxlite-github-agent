@@ -1,7 +1,9 @@
 // Codex CLI as @botlite's brain: the command a session box runs, the reading of its `--json`
 // event stream, and the prompts. Pure — no I/O — so all of it is unit-tested.
 
-export const CODEX_VERSION = '0.150.0' // pinned: the flags and JSONL events below are checked against it
+// Pinned: the flags and JSONL events below are checked against it. The backend offers a model
+// only to clients at or above its minimal version (gpt-6-astra needs 0.153.0).
+export const CODEX_VERSION = '0.155.1'
 
 /**
  * argv for one Codex turn: a new session in `cwd`, or `resume <sessionId>`. The prompt comes on
@@ -11,10 +13,13 @@ export const CODEX_VERSION = '0.150.0' // pinned: the flags and JSONL events bel
  * Auth is ChatGPT mode, but everything goes to the controller (`proxyUrl`): the `botlite`
  * provider sends the turn with the box's auth.json token (a job token, never the real login) to
  * <proxy>/backend-api/codex/responses, and chatgpt_base_url sends Codex's optional backend calls
- * there too, where they get a 404 instead of reaching chatgpt.com. Verified against 0.150.0.
+ * there too, where they get a 404 instead of reaching chatgpt.com. Verified against 0.155.1.
+ * `effort` is the model's reasoning effort (low … xhigh, max, ultra — whatever the model offers).
  */
-export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model }) {
+export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model, effort }) {
   if (!/^https?:\/\/[^\s"'\\]+$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
+  if (effort && !/^[a-z]+$/.test(effort)) throw new Error(`bad reasoning effort: ${effort}`)
+  if (model && !/^[\w.:-]+$/.test(model)) throw new Error(`bad model: ${model}`)
   const origin = proxyUrl.replace(/\/+$/, '')
   const opts = [
     '--json',
@@ -29,6 +34,7 @@ export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model }) {
     '-c', `chatgpt_base_url="${origin}/backend-api/"`,
     '-c', 'model_provider="botlite"',
     '-c', `model_providers.botlite={ name = "botlite", base_url = "${origin}/backend-api/codex", wire_api = "responses", requires_openai_auth = true }`,
+    ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
     ...(model ? ['-m', model] : []),
   ]
   return sessionId ? ['exec', 'resume', ...opts, sessionId, '-'] : ['exec', ...opts, '-C', cwd, '-']
