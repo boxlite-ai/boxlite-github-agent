@@ -82,7 +82,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     private=$(body "$(authed "$GITHUB_TOKEN" 'https://api.github.com/user/repos?visibility=private&per_page=1')" | jq 'if type == "array" then length else 0 end')
     [ "${private:-0}" = 0 ] || echo "  ⚠ the repo scope reaches private repos, and @$login can see some — keep the bot's account out of them"
   else
-    echo "  ⚠ token lacks the repo scope — the bot can't turn Actions off on its forks, so its PRs can't change workflows"
+    echo "  ⚠ token lacks the repo scope — the bot can't turn Actions off on its forks, so it won't open PRs"
   fi
   echo "  @$login ·$scopes"
 else

@@ -60,21 +60,24 @@ test('branchesFor: readable, one per thread, valid ref names even for .github or
 
 const compare = (files, over = {}) => ({ merge_base_commit: { sha: BASE }, behind_by: 0, ahead_by: 1, files, ...over })
 const file = (filename, over = {}) => ({ filename, status: 'modified', additions: 2, deletions: 1, ...over })
-const blob = (size = 100, mode = '100644') => ({ mode, type: 'blob', size })
 
 test('checkChange: whatever it touches, it passes — dependency files flagged, CI, review and funding files called out', () => {
   const files = [
     file('src/a.js'), file('package.json'), file('web/yarn.lock'), file('gone.txt', { status: 'removed' }),
     file('.github/workflows/ci.yml'), file('.GitHub/Actions/setup/action.yml'), file('docs/CODEOWNERS'), file('.gitmodules'), file('.github/FUNDING.yml'),
     file('ci.yml', { status: 'renamed', previous_filename: '.github/workflows/old.yml' }), // moving one away counts too
+    file('deps.json', { status: 'renamed', previous_filename: 'package-lock.json' }), // for dependency files too
     file('big.bin', { additions: 60_000 }), // no size limit: the reviewer decides
   ]
   assert.deepEqual(checkChange({ base: BASE, compare: compare(files, { ahead_by: 80 }) }), {
     ok: true,
-    flagged: ['package.json', 'web/yarn.lock'],
+    flagged: ['package.json', 'web/yarn.lock', 'package-lock.json'],
     careful: ['.github/workflows/ci.yml', '.GitHub/Actions/setup/action.yml', 'docs/CODEOWNERS', '.gitmodules', '.github/FUNDING.yml', '.github/workflows/old.yml'],
+    partial: false,
   })
-  assert.deepEqual(checkChange({ base: BASE, compare: compare([file('src/a.js')]) }), { ok: true, flagged: [], careful: [] })
+  assert.deepEqual(checkChange({ base: BASE, compare: compare([file('src/a.js')]) }), { ok: true, flagged: [], careful: [], partial: false })
+  // GitHub lists at most 300 files: past that, the notes may miss some, and say so.
+  assert.equal(checkChange({ base: BASE, compare: compare(Array.from({ length: 300 }, (_, i) => file(`f${i}`))) }).partial, true)
 })
 
 test('checkChange: refused only when it isn\'t a change on the base — wrong base, or nothing', () => {
@@ -165,28 +168,31 @@ test('plan.open: on the first push — fork, turn Actions off, sync, clear stale
   assert.equal(plan.behind, null)
 })
 
-test('plan.open: Actions already off → nothing to change; Actions it can\'t turn off, or a fork that can\'t catch up → noted, and no workflows', async () => {
+test('plan.open: Actions already off → nothing to change; Actions it can\'t turn off → no push at all; a fork that can\'t catch up → noted', async () => {
   const fork = ['POST', /^\/repos\/acme\/app\/forks$/, { full_name: 'botlite/app', name: 'app', default_branch: 'main' }]
   const forkTip = ['GET', /^\/repos\/botlite\/app\/git\/ref\/heads\/main$/, { object: { sha: BASE } }]
   const clear = ['DELETE', /botlite-staging/, null]
-  const opened = async (routes) => {
+  const opening = async (routes) => {
     const gh = fakeGithub([upstream, upstreamTip, fork, forkTip, clear, ...routes])
     const app = fakeApp()
     const logs = []
     const plan = await planWrite({ gh, app, me, req, pr: null, key: 'acme/app#7', log: (l) => logs.push(l) })
-    await plan.open()
-    return { gh, app, plan, logs }
+    return { gh, app, plan, logs, opened: await plan.open().catch((e) => e) }
   }
-  const off = await opened([['POST', /merge-upstream$/, {}], ['GET', /actions\/permissions$/, { enabled: false }]])
+  const off = await opening([['POST', /merge-upstream$/, {}], ['GET', /actions\/permissions$/, { enabled: false }]])
   assert.deepEqual(off.app.minted, ['app +workflows'])
   assert.equal(off.gh.called('PUT', /./).length, 0)
 
-  // The bot's token without the repo scope can't read or change the setting: no workflows then.
-  const unknown = await opened([['POST', /merge-upstream$/, {}], ['GET', /actions\/permissions$/, () => { throw fail(403) }]])
-  assert.deepEqual(unknown.app.minted, ['app'])
+  // The bot's token without the repo scope can't read or change the setting: nothing is pushed.
+  const unknown = await opening([['POST', /merge-upstream$/, {}], ['GET', /actions\/permissions$/, () => { throw fail(403) }]])
+  assert.equal(unknown.opened.message, "I couldn't turn Actions off on my fork botlite/app, so I won't push there (the bot's GitHub token needs the repo scope)")
+  assert.deepEqual(unknown.app.minted, [])
+  assert.equal(unknown.gh.called('POST', /merge-upstream$/).length, 0)
   assert.match(unknown.logs.join('\n'), /acme\/app#7: turning Actions off on botlite\/app: HTTP 403/)
+  const refused = await publishWrite({ gh: unknown.gh, app: unknown.app, me, plan: unknown.plan, req, result: { pushed: null, error: 'fatal: …' } })
+  assert.equal(refused, "⚠️ Couldn't set up the PR branch: I couldn't turn Actions off on my fork botlite/app, so I won't push there (the bot's GitHub token needs the repo scope)")
 
-  const behind = await opened([['POST', /merge-upstream$/, () => { throw fail(422) }], ['GET', /actions\/permissions$/, { enabled: false }]])
+  const behind = await opening([['POST', /merge-upstream$/, () => { throw fail(422) }], ['GET', /actions\/permissions$/, { enabled: false }]])
   assert.equal(behind.plan.behind, 'HTTP 422')
   assert.match(behind.logs.join('\n'), /acme\/app#7: syncing botlite\/app: HTTP 422/)
 })
@@ -259,15 +265,11 @@ test('publishWrite: a PR asked for in Slack says only that — never who asked, 
 })
 
 test('publishWrite: a PR on the bot’s own repo that touches its trust boundary says so, at the top and in the reply', async () => {
-  const tree = [
-    ['GET', new RegExp(`^/repos/botlite/app/git/trees/${TREE}$`), { tree: [{ path: 'src', type: 'tree', sha: 'SRC' }] }],
-    ['GET', /^\/repos\/botlite\/app\/git\/trees\/SRC$/, { tree: [{ path: 'a.js', ...blob() }, { path: 'publish.mjs', ...blob() }] }],
-  ]
-  const self = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')], extra: tree })
+  const self = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')] })
   assert.equal(await self.publish({ selfRepo: 'Acme/App' }), '📬 Opened draft PR https://github.com/acme/app/pull/12. It changes my own trust boundary (`src/publish.mjs`) — review it closely.')
   assert.match(self.gh.called('POST', /pulls$/)[0].body.body, /^> \[!WARNING\]\n> This changes the bot's own trust boundary — `src\/publish\.mjs`\. Review it closely: once merged, an admin's `\/deploy` puts it live\./)
 
-  const other = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')], extra: tree })
+  const other = await pushedTurn({ files: [file('src/a.js'), file('src/publish.mjs')] })
   assert.equal(await other.publish({ selfRepo: 'acme/bot' }), '📬 Opened draft PR https://github.com/acme/app/pull/12.') // not the bot's own repo
   assert.doesNotMatch(other.gh.called('POST', /pulls$/)[0].body.body, /WARNING/)
 })
@@ -290,6 +292,10 @@ test('publishWrite: CI, review and funding files are published — called out at
   const { body } = t.gh.called('POST', /pulls$/)[0].body
   assert.match(body, /^> \[!CAUTION\]\n> This changes CI, review routing, submodules or sponsorship links — `\.github\/workflows\/ci\.yml`, `CODEOWNERS`\. Check exactly what they do before you approve a CI run or merge/)
   assert.equal(t.gh.called('GET', /git\/trees/).length, 0) // no rule looks at modes or sizes any more
+
+  const huge = await pushedTurn({ files: Array.from({ length: 300 }, (_, i) => file(`f${i}.txt`)) })
+  await huge.publish()
+  assert.match(huge.gh.called('POST', /pulls$/)[0].body.body, /^> \[!NOTE\]\n> This changes more files than GitHub lists in one diff \(300\), so the notes on this PR may miss some/)
 })
 
 test('publishWrite: a follow-up fast-forwards the branch of its open PR — and never overwrites a push made meanwhile', async () => {

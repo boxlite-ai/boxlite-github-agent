@@ -98,8 +98,9 @@ shows only how the controller started, never a line about a thread.
   PR's own workflows before anyone has reviewed it, so require approval for outside
   contributors' runs in a repo with self-hosted runners.
 - **Its fork runs no Actions.** Before a turn's first push, the controller turns Actions off on the
-  bot's fork: a push there would run the box's code with a token that can write the fork. Only
-  then may the turn's push token carry workflow files, if the push App may write them.
+  bot's fork: a push there would run the box's code with a token that can write the fork. If it
+  can't, nothing is pushed. The turn's push token may then carry workflow files, if the push App
+  may write them.
 - **What's published:** one commit by the bot on `botlite/<owner>/<repo>/<n>` in its fork, as a
   draft PR into the default branch. For someone else's PR, the draft PR goes into that PR's branch;
   on a PR the bot opened, the commit goes straight onto its branch. A follow-up adds a commit, and a
@@ -311,8 +312,8 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
 - **GitHub token:** a *classic* PAT on the bot's own account with `notifications` + `repo` +
   `workflow` (the notifications API rejects fine-grained tokens). `workflow` lets the bot's forks
   catch up with an upstream that changed a workflow; without it, PRs from such a fork fail. `repo`
-  lets the bot turn Actions off on its forks (`public_repo` works, but then its PRs can't change
-  workflows). It also reaches private repos, so keep the bot's account out of them: the deploy
+  lets the bot turn Actions off on its forks, which PR writing needs (with `public_repo` alone it
+  only answers). It also reaches private repos, so keep the bot's account out of them: the deploy
   warns if it can see any. Never `delete_repo`. The bot is whoever the token belongs to.
 - **Push App (PR writing):** a GitHub App of its own, separate from the webhook App. Give it
   *Repository permissions → Contents: Read and write*, and *Workflows: Read and write* if its PRs

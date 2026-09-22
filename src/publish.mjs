@@ -20,6 +20,8 @@ const CAREFUL = [/^\.github\/workflows\//i, /^\.github\/actions\//i, /(^|\/)CODE
 // Changed, but called out at the top of the PR: a dependency change is often the fix itself.
 const DEPENDENCY = /^(package(-lock)?\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|deno\.(json|jsonc|lock)|requirements[\w.-]*\.txt|Pipfile(\.lock)?|poetry\.lock|pyproject\.toml|uv\.lock|setup\.(py|cfg)|Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|[\w.-]+\.gemspec|composer\.(json|lock)|pom\.xml|build\.gradle(\.kts)?|gradle\.lockfile|packages\.lock\.json|[\w.-]+\.csproj|Directory\.Packages\.props|Package\.(swift|resolved)|Podfile(\.lock)?|mix\.(exs|lock)|pubspec\.(yaml|lock)|flake\.(nix|lock))$/
 const TRAILER = /^[ \t]*(co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|helped-by|approved-by)[ \t]*:.*$/gim
+// The most files GitHub's compare lists: its pagination covers commits, not files.
+const COMPARE_FILES = 300
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const orNull = (p) => p.catch((e) => (e.status === 404 ? null : Promise.reject(e)))
@@ -90,11 +92,11 @@ function withOpen(plan, { gh, app, upstream, own = false, key, log }) {
         const f = plan.fork && own ? { full_name: plan.fork, name: plan.fork.split('/')[1] } : await ensureFork(gh, upstream)
         // The fork runs no Actions — before the sync, which would run upstream's CI there. A push
         // there would run the box's code, or a workflow it wrote, with a token that can write the
-        // fork, the bot's other PR branches included; a PR's checks run upstream anyway. Only
-        // then may the push token write workflows.
-        const quiet = await actionsOff(gh, f.full_name).catch((e) => {
+        // fork, the bot's other PR branches included; a PR's checks run upstream anyway. No push
+        // until that's sure.
+        await actionsOff(gh, f.full_name).catch((e) => {
           log(`${key}: turning Actions off on ${f.full_name}: ${e.message}`)
-          return false
+          throw new Error(`I couldn't turn Actions off on my fork ${f.full_name}, so I won't push there (${e.status === 403 || e.status === 404 ? "the bot's GitHub token needs the repo scope" : e.message.slice(0, 120)})`)
         })
         if (!own) {
           // Level with upstream, so the push carries only the turn's own commits: a push token
@@ -107,7 +109,7 @@ function withOpen(plan, { gh, app, upstream, own = false, key, log }) {
         }
         await gh.request('DELETE', `/repos/${f.full_name}/git/refs/heads/${plan.staging}`) // a leftover from a turn that never finished
         plan.fork = f.full_name
-        plan.token = await app.token(f.name, { workflows: quiet })
+        plan.token = await app.token(f.name, { workflows: true }) // if the push App may write them
         return { repo: plan.fork, token: plan.token }
       })()
       return plan.opened
@@ -142,10 +144,9 @@ export async function planSlackWrite({ gh, app, me, repo, base, id, knownFork, l
   }, { gh, app, upstream: upstream.full_name, key, log })
 }
 
-/** Turn Actions off on the bot's fork (the bot's token needs the `repo` scope). Resolves to true once it's off. */
+/** Turn Actions off on the bot's fork (the bot's token needs the `repo` scope); resolves once it's off. */
 async function actionsOff(gh, repo) {
   if ((await gh.json('GET', `/repos/${repo}/actions/permissions`)).enabled) await gh.json('PUT', `/repos/${repo}/actions/permissions`, { body: { enabled: false } })
-  return true
 }
 
 async function ensureFork(gh, repo) {
@@ -162,8 +163,9 @@ async function ensureFork(gh, repo) {
  * What a change must be, on GitHub's compare of base...pushed commit: commits on top of `base`
  * that add up to a change. The squash commit is the pushed tree on `base`, so commits from
  * anywhere else would quietly undo upstream's work. The rest is the reviewer's: `flagged` are
- * dependency files, `careful` the files a diff undersells (CAREFUL).
- * @returns {{ ok: true, flagged: string[], careful: string[] } | { ok: false, reason: string }}
+ * dependency files, `careful` the files a diff undersells (CAREFUL), each under its old name too;
+ * `partial` when GitHub listed only its first COMPARE_FILES, so those two may miss some.
+ * @returns {{ ok: true, flagged: string[], careful: string[], partial: boolean } | { ok: false, reason: string }}
  */
 export function checkChange({ base, compare }) {
   if (compare.merge_base_commit?.sha !== base || compare.behind_by > 0) return { ok: false, reason: `the commits aren't on top of ${base.slice(0, 7)}` }
@@ -172,8 +174,9 @@ export function checkChange({ base, compare }) {
   const paths = [...new Set(files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)))]
   return {
     ok: true,
-    flagged: files.map((f) => f.filename).filter((p) => DEPENDENCY.test(p.split('/').pop())),
+    flagged: paths.filter((p) => DEPENDENCY.test(p.split('/').pop())),
     careful: paths.filter((p) => CAREFUL.some((re) => re.test(p))),
+    partial: files.length >= COMPARE_FILES,
   }
 }
 
@@ -195,9 +198,10 @@ export function describeChange(commits, req) {
   return { title, body, message }
 }
 
-function prBody({ body, req, flagged, careful = [], sensitive }) {
+function prBody({ body, req, flagged, careful = [], partial = false, sensitive }) {
   const list = (files) => files.map((f) => `\`${f}\``).join(', ')
   return [
+    ...(partial ? [`> [!NOTE]\n> This changes more files than GitHub lists in one diff (${COMPARE_FILES}), so the notes on this PR may miss some: review every file.`] : []),
     ...(careful.length ? [`> [!CAUTION]\n> This changes CI, review routing, submodules or sponsorship links — ${list(careful)}. Check exactly what they do before you approve a CI run or merge: CI runs a PR's own workflows.`] : []),
     ...(sensitive.length ? [`> [!WARNING]\n> This changes the bot's own trust boundary — ${list(sensitive)}. Review it closely: once merged, an admin's \`/deploy\` puts it live.`] : []),
     body || '_No description._',
@@ -278,7 +282,7 @@ export async function publishWrite({ gh, app, me, plan, req, result, refuse = nu
     if (!plan.target) return `📬 Pushed ${short} to this PR.${careful}`
     if (plan.existing) return `📬 Pushed ${short} to draft PR ${plan.existing.html_url}.${careful}`
     const pull = await gh.json('POST', `/repos/${plan.target.repo}/pulls`, {
-      body: { title, head: `${me.login}:${plan.branch}`, base: plan.target.base, body: prBody({ body, req, flagged: verdict.flagged, careful: verdict.careful, sensitive }), draft: true, maintainer_can_modify: true },
+      body: { title, head: `${me.login}:${plan.branch}`, base: plan.target.base, body: prBody({ body, req, flagged: verdict.flagged, careful: verdict.careful, partial: verdict.partial, sensitive }), draft: true, maintainer_can_modify: true },
     })
     return `📬 Opened draft PR ${pull.html_url}.${careful}`
   } finally {
