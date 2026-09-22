@@ -439,6 +439,17 @@ permissions. A mention that arrives both ways is handled once.
 
 ## Develop
 
+Install the shared [agent-tooling](https://github.com/boxlite-ai/agent-tooling) once per
+clone or worktree (requires Git, Bash, jq, and Perl):
+
+```bash
+./.agent-tooling/install.sh
+```
+
+This configures local Git hooks and refreshes the shared guidance in `AGENTS.md`.
+The repository profile in `.agent-tooling/profile.json` follows tooling `main`
+and declares `npm test`. Host plugins require installation in the host.
+
 ```bash
 npm test                 # offline: no network, BoxLite, Slack or model
 BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (needs codex 0.155.1)
