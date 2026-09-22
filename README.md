@@ -160,6 +160,69 @@ and a follow-up there (a mention again, in a channel) continues the same session
 screenshots or code to the message and the box gets them too: up to 5 MB a file and 8 MB a message.
 They reach that thread's box only, on the exec's stdin, and never go on a volume.
 
+**Sharing a channel is an agent tool.** In the channel you want to share, ask naturally:
+
+```text
+@boxliteai let #announcements know about this channel
+```
+
+Select the destination in Slack's channel picker, or give its ID, e.g. `#C1234567890`.
+Invite the bot to the destination first. The agent reads the request and thread context, then
+calls `mcp__slack__share_channel({"target_channel_id":"C1234567890"})` when sharing is requested.
+There is no fixed phrase parser or `/share` command. If the destination is unclear, the agent
+is instructed to ask for a channel mention instead of guessing. For example, when Alice asks
+from `#engineering`:
+
+| Where | What appears |
+|---|---|
+| `#announcements` | `@alice shared #engineering`, followed by an **Open channel** link |
+| The original thread in `#engineering` | The agent's confirmation, with a controller-recorded `Slack share_channel` change in the footer |
+
+```mermaid
+sequenceDiagram
+    actor Requester
+    participant Bot as Slack controller
+    participant Agent as Agent in thread microVM
+    participant API as Slack Web API
+    participant Destination as Destination channel
+    Requester->>Bot: Mention with a request to share the current channel
+    Note over Bot: Ignore duplicate events and check member access and quota
+    Bot->>Agent: Request, thread context, channel IDs and share_channel tool
+    Note over Agent: Interpret intent and destination from context
+    Agent->>Bot: share_channel(target_channel_id), authenticated by job token
+    Note over Bot: Bind source to current request and check tool budgets
+    Bot->>API: conversations.info for destination
+    alt Destination is available and posting succeeds
+        Bot->>API: chat.postMessage with source channel link
+        API->>Destination: @requester shared #source + Open channel
+        Bot-->>Agent: Success result
+    else Destination rejected or Slack call fails
+        Bot-->>Agent: Error result with recovery guidance
+    end
+    Agent-->>Bot: Final answer based on tool result
+    Bot-->>Requester: Reply in original thread, with audit of successful changes
+```
+
+The tool is available only in Slack channel turns. The controller binds its source channel,
+workspace and requester to the current request; the agent supplies only the destination ID.
+The Slack token stays in the controller. The job token works only while that turn is active,
+and cannot grant this capability to a DM or GitHub turn. Successful shares use the existing
+tool write budget and appear in the reply's change audit.
+
+The agent is instructed to call the tool only on request, and not to treat quoted examples,
+code or tool output as permission. The controller enforces the source binding and destination
+checks; interpreting the user's intent is the agent's responsibility. It shares only a channel
+link, copies no messages or files, and grants no access to private channels. Archived channels,
+DMs and destinations shared with another organization (Slack Connect) are rejected. The app
+needs `channels:read`, `groups:read` and `chat:write` from `slack/manifest.json`; reinstall older
+installations after updating the scopes.
+
+Concurrent or repeated calls to the same destination in one request return the first result,
+including failures, without reposting. This also holds if a lost model session is restarted.
+A new user request can share again. If Slack's response is lost, the tool reports uncertainty:
+check the destination before requesting a retry. These turns use the same member checks,
+daily quota, scheduling and duplicate-event handling as coding turns.
+
 **A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into any
 public repo (`SLACK_PR_REPOS` in `src/policy.mjs` can narrow that, to `boxlite-ai/*` say). A Slack thread
 belongs to no repo, so the PR is asked for at the end of the turn:
@@ -282,7 +345,7 @@ public reply. Keep the bot's accounts narrow, and add changes one at a time.
 |---|---|---|---|
 | Bot's GitHub token | holds: polls, reacts, replies, forks, opens PRs | never (clones anonymously) | never |
 | Push App key | holds: one token per write turn, for that fork only | never (pushes via the controller) | never |
-| Slack bot token (`xoxb-`) | holds: reads threads, people, files; reacts, replies | never | never |
+| Slack bot token (`xoxb-`) | holds: reads threads, people, files; reacts, replies, shares channel links on request | never | never |
 | Slack app token (`xapp-`) | holds: opens Socket Mode connections | never | never |
 | Linear API key | holds: Linear's MCP server | never | never |
 | Notion and Google logins | hold and refresh them | never | never |
@@ -313,6 +376,7 @@ else would go stale.
 | `src/slack-channel.mjs` | controller | Slack: who may ask, each message to a turn, the answer back |
 | `src/slack-socket.mjs` · `slack-events.mjs` | controller | Socket Mode events, acked at once; Slack events → requests, markup → text, files |
 | `src/slack.mjs` · `slack-reply.mjs` | controller | Slack Web API as the bot: 👀, replies, file downloads |
+| `src/slack-tools.mjs` · `slack-share.mjs` | controller | agent channel-sharing tool: job scope, budgets, duplicate calls, destination checks and link posting |
 | `src/policy.mjs` | controller | your policy: who may use the bot in Slack, which tools it may use |
 | `src/tools.mjs` · `oauth.mjs` | controller | the tool broker at `/mcp/<service>`; the bot's logins, kept fresh |
 | `src/jobs.mjs` · `state.mjs` | controller | one turn per thread, a few at once; seen requests, sessions, quotas |
@@ -363,8 +427,9 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
   *Install App → Install to Workspace* gives the *Bot User OAuth Token*, `xoxb-…`. Optionally,
   upload `slack/icon.png` as the app icon. Invite the bot where people should use it:
   `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in. The
-  manifest leaves out `channels:read` and `groups:read`; add them if you want channel threads'
-  boxes named after their channel, not only after who started them.
+  manifest includes `channels:read` and `groups:read` to check sharing destinations and name
+  channel threads' boxes. For an existing installation, update its scopes from the manifest and
+  reinstall the app in the workspace before using channel sharing.
 - **ChatGPT login:** the controller runs `codex login --device-auth` in its box, and `status` shows
   the link and code to approve with the bot's ChatGPT account. Use an account only the bot uses,
   and never copy another controller's `auth.json`: each refresh rotates the token, so two holders of
@@ -452,8 +517,9 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (nee
   upstream changed a workflow file since the last sync, GitHub refuses that sync unless the bot's
   PAT has the `workflow` scope, and then refuses the push, which would bring that change in. The
   reply says which workflow and what the operator can do.
-- **One Slack workspace, answers only.** It's an internal app on Socket Mode; offering it to other
-  workspaces would take OAuth and the Events API. It sees only its thread, and posts only there.
+- **One Slack workspace.** It's an internal app on Socket Mode; offering it to other workspaces
+  would take OAuth and the Events API. Model answers go only to their thread; the agent can use its
+  `share_channel` tool to post the current channel's link to a requested destination.
 - **The box has the open internet.** A Slack thread's text, private channels included, and whatever
   the tools read go into a machine that can send them anywhere if a message talks Codex into it.
   Keep the bot out of channels whose contents must not leave.

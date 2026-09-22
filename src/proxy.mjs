@@ -27,7 +27,7 @@ export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.c
     if (webhook && req.method === 'POST' && req.url === '/webhook') return webhook(req, res) // GitHub App deliveries (webhook.mjs)
     if (git && req.url.startsWith('/git/')) return git(req, res) // a write turn's one push (gitpush.mjs)
     if (pr && req.url === '/pr') return pr(req, res) // a Slack turn asking for its PR's push (prgrant.mjs)
-    if (tools && req.url.startsWith('/mcp/')) return tools(req, res) // Linear, Notion, Google Workspace (tools.mjs)
+    if (tools && req.url.startsWith('/mcp/')) return tools(req, res) // team services and local Slack tools (tools.mjs)
     if (!ALLOWED.some(([m, re]) => m === req.method && re.test(req.url))) return send(res, 404, 'not available through this proxy')
     const claims = verifyJobToken(secret, /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1])
     const job = claims && jobs.live.get(claims.jti)

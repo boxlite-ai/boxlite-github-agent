@@ -1,7 +1,8 @@
 // Slack: the bot's second place to be asked, beside GitHub. A Socket Mode connection the
 // controller dials out (slack-socket.mjs) brings each message that mentions the bot, or is sent to
-// it directly; each becomes one Codex turn in that thread's own box, and the answer goes back in
-// the thread. Who may ask is decided here, by the workspace's rules (policy.mjs: members only),
+// it directly; requests become Codex turns in that thread's own box, with a Slack sharing tool
+// bound to the current channel. Answers go back in the thread. Who may ask is decided here, by
+// the workspace's rules (policy.mjs: members only),
 // before any box starts; the team's tools come with every turn, since everyone who can ask may
 // read what the bot's accounts read. It does all the bot does on GitHub, too: a turn may open a
 // draft PR into a repo policy.mjs allows (asked for by its box when the work is done: prgrant.mjs),
@@ -15,6 +16,8 @@ import { slack } from './slack.mjs'
 import { socketMode } from './slack-socket.mjs'
 import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
 import { react, reply, say, whisper, tally } from './slack-reply.mjs'
+import { shareChannel } from './slack-share.mjs'
+import { SLACK_SERVICE } from './slack-tools.mjs'
 import { mayUseSlack, isSlackAdmin, slackPrAllowed, prTargets } from './policy.mjs'
 import { parseCommand } from './access.mjs'
 import { pushFailure } from './publish.mjs'
@@ -147,9 +150,11 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       const known = slackState.threads[key]?.sessionId ? slackState.threads[key] : null
       const [asker, files, names] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), Promise.all(Object.values(logins).map((l) => l.load()))])
       const services = enabledServices(logins, policy)
+      if (!req.isDM) services.push(SLACK_SERVICE)
       const prsNow = await prs.status()
       const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, prs: prsNow }
       const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name) } // what its token opens
+      if (!req.isDM) job.slack = { shareChannel: (channel) => shareChannel(sk, req, { channel }, bot) }
       // A PR is planned only when the box asks for it, for the request's own branch (publish.mjs).
       if (prsNow.ok) job.pr = { grant: (want) => grantPr(want, job, `${key}@${req.ts}`) }
       const fresh = async () => slackSessionPrompt({ ...talk, history: await transcript(req) })
@@ -190,6 +195,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `• \`@${bot.name} <question or task>\` in a channel I'm in, or message me directly`,
       `• follow up in the same thread${req.isDM ? '' : ' (mention me again)'}: I remember it, and its files stay on my machine until it's been quiet for ${ttl}`,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
+      `• ask me to share this channel with another, e.g. \`@${bot.name} let #destination know about this channel\` — invite me to the destination first`,
       now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
@@ -235,6 +241,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       log(`${key}: ${who} is over today's limit`)
       return whisper(sk, req, `You've reached today's limit of ${cfg.slackDailyLimit} requests — it resets at 00:00 UTC.`).catch((e) => log(`${key}: ${e.message}`))
     }
+    if (cfg.slackDailyLimit) persist()
     log(`${key}: request from ${who} via ${via}`)
     // 👀 the moment we have it — not queued behind other turns; the reply waits for it (handle()).
     req.ack = react(sk, req).catch((e) => log(`${key}: 👀 reaction failed: ${e.message}`))

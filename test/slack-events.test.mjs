@@ -57,7 +57,8 @@ test('isHelp: help alone, with or without the mention, any case — not a reques
 test('plainText: Slack markup made readable, literal angle brackets kept', () => {
   const names = new Map([['U1', 'alice'], ['UBOT', 'botlite']])
   const text = '<@UBOT> ask <@U1> and <@U2|bob> in <#C1|general>, <!here>, <!subteam^S1|@devs>: see <https://ci.example/run/1|the run> or <https://x.dev> — a &lt;b&gt; &amp; <mailto:a@b.co|a@b.co>'
-  assert.equal(plainText(text, names), '@botlite ask @alice and @bob in #general, @here, @devs: see the run (https://ci.example/run/1) or https://x.dev — a <b> & a@b.co')
+  assert.equal(plainText(text, names), '@botlite ask @alice and @bob in #general (channel ID: C1), @here, @devs: see the run (https://ci.example/run/1) or https://x.dev — a <b> & a@b.co')
+  assert.equal(plainText('<#CDEST> and <#GPRIVATE|private>'), '#CDEST and #private (channel ID: GPRIVATE)')
   assert.equal(plainText(undefined), '')
 })
 
@@ -88,6 +89,7 @@ test('threadLine: who said it — the bot itself, a person, an app — with its 
   assert.deepEqual(threadLine({ ts: '1.1', user: 'U1', text: 'hi <@U1>', files: [{ name: 'a.log' }] }, names, bot), { ts: '1.1', who: '@alice', text: 'hi @alice\n[file: a.log]' })
   assert.equal(threadLine({ ts: '1.2', bot_id: 'BBOT', text: 'answer' }, names, bot).who, '@botlite (you)')
   assert.equal(threadLine({ ts: '1.3', bot_id: 'B7', bot_profile: { name: 'CI' }, text: 'failed' }, names, bot).who, 'CI (app)')
+  assert.equal(threadLine({ text: 'Use <#CDEST|announcements>' }, names, bot).text, 'Use #announcements (channel ID: CDEST)')
   assert.equal(threadLine({ ts: '1.4', user: 'U9', text: '' }, names, bot).who, '@U9')
 })
 
