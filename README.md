@@ -160,6 +160,15 @@ and a follow-up there (a mention again, in a channel) continues the same session
 screenshots or code to the message and the box gets them too: up to 5 MB a file and 8 MB a message.
 They reach that thread's box only, on the exec's stdin, and never go on a volume.
 
+To share the current channel's link, mention the bot with
+`@boxliteai share this channel to #destination`, `@boxliteai 把这个群分享给 #目标频道`,
+or `@boxliteai /share #destination`. Select the destination in Slack's channel picker, or use
+its ID, e.g. `#C1234567890`. The controller posts the link in that channel and confirms in the
+original thread, without starting a model turn. It shares no messages or files and grants no
+access to private channels. Invite the bot to the destination first; archived channels, DMs and
+destinations shared with another organization (Slack Connect) are not supported. These requests
+use the same member checks, daily quota, scheduling and duplicate-event handling as coding turns.
+
 **A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into any
 public repo (`SLACK_PR_REPOS` in `src/policy.mjs` can narrow that, to `boxlite-ai/*` say). A Slack thread
 belongs to no repo, so the PR is asked for at the end of the turn:
@@ -246,7 +255,7 @@ public reply. Keep the bot's accounts narrow, and add changes one at a time.
 |---|---|---|---|
 | Bot's GitHub token | holds: polls, reacts, replies, forks, opens PRs | never (clones anonymously) | never |
 | Push App key | holds: one token per write turn, for that fork only | never (pushes via the controller) | never |
-| Slack bot token (`xoxb-`) | holds: reads threads, people, files; reacts, replies | never | never |
+| Slack bot token (`xoxb-`) | holds: reads threads, people, files; reacts, replies, shares channel links on request | never | never |
 | Slack app token (`xapp-`) | holds: opens Socket Mode connections | never | never |
 | Linear API key | holds: Linear's MCP server | never | never |
 | Notion and Google logins | hold and refresh them | never | never |
@@ -277,6 +286,7 @@ else would go stale.
 | `src/slack-channel.mjs` | controller | Slack: who may ask, each message to a turn, the answer back |
 | `src/slack-socket.mjs` · `slack-events.mjs` | controller | Socket Mode events, acked at once; Slack events → requests, markup → text, files |
 | `src/slack.mjs` · `slack-reply.mjs` | controller | Slack Web API as the bot: 👀, replies, file downloads |
+| `src/slack-share.mjs` | controller | explicit channel sharing: destination checks, link posting, failure messages |
 | `src/policy.mjs` | controller | your policy: who may use the bot in Slack, which tools it may use |
 | `src/tools.mjs` · `oauth.mjs` | controller | the tool broker at `/mcp/<service>`; the bot's logins, kept fresh |
 | `src/jobs.mjs` · `state.mjs` | controller | one turn per thread, a few at once; seen requests, sessions, quotas |
@@ -327,8 +337,9 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
   *Install App → Install to Workspace* gives the *Bot User OAuth Token*, `xoxb-…`. Optionally,
   upload `slack/icon.png` as the app icon. Invite the bot where people should use it:
   `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in. The
-  manifest leaves out `channels:read` and `groups:read`; add them if you want channel threads'
-  boxes named after their channel, not only after who started them.
+  manifest includes `channels:read` and `groups:read` to check sharing destinations and name
+  channel threads' boxes. For an existing installation, update its scopes from the manifest and
+  reinstall the app in the workspace before using channel sharing.
 - **ChatGPT login:** the controller runs `codex login --device-auth` in its box, and `status` shows
   the link and code to approve with the bot's ChatGPT account. Use an account only the bot uses,
   and never copy another controller's `auth.json`: each refresh rotates the token, so two holders of
@@ -416,8 +427,9 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (nee
   upstream changed a workflow file since the last sync, GitHub refuses that sync unless the bot's
   PAT has the `workflow` scope, and then refuses the push, which would bring that change in. The
   reply says which workflow and what the operator can do.
-- **One Slack workspace, answers only.** It's an internal app on Socket Mode; offering it to other
-  workspaces would take OAuth and the Events API. It sees only its thread, and posts only there.
+- **One Slack workspace.** It's an internal app on Socket Mode; offering it to other workspaces
+  would take OAuth and the Events API. Model answers go only to their thread; explicit channel-share
+  commands also post the current channel's link to the requested destination.
 - **The box has the open internet.** A Slack thread's text, private channels included, and whatever
   the tools read go into a machine that can send them anywhere if a message talks Codex into it.
   Keep the bot out of channels whose contents must not leave.

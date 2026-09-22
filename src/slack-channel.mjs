@@ -1,7 +1,8 @@
 // Slack: the bot's second place to be asked, beside GitHub. A Socket Mode connection the
 // controller dials out (slack-socket.mjs) brings each message that mentions the bot, or is sent to
-// it directly; each becomes one Codex turn in that thread's own box, and the answer goes back in
-// the thread. Who may ask is decided here, by the workspace's rules (policy.mjs: members only),
+// it directly; coding requests become Codex turns in that thread's own box, while explicit share
+// commands are handled here. Answers go back in the thread. Who may ask is decided here, by the
+// workspace's rules (policy.mjs: members only),
 // before any box starts; the team's tools come with every turn, since everyone who can ask may
 // read what the bot's accounts read. It does all the bot does on GitHub, too: a turn may open a
 // draft PR into a repo policy.mjs allows (asked for by its box when the work is done: prgrant.mjs),
@@ -13,8 +14,9 @@
 // event once; a restart must not drop it).
 import { slack } from './slack.mjs'
 import { socketMode } from './slack-socket.mjs'
-import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
+import { requestFromEvent, isHelp, shareRequest, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
 import { react, reply, say, whisper, tally } from './slack-reply.mjs'
+import { shareChannel, shareFailure } from './slack-share.mjs'
 import { mayUseSlack, isSlackAdmin, slackPrAllowed, prTargets } from './policy.mjs'
 import { parseCommand } from './access.mjs'
 import { pushFailure } from './publish.mjs'
@@ -144,6 +146,21 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
   async function handle(req) {
     const key = slackThreadKey(req)
     try {
+      const target = shareRequest(req.text, bot)
+      if (target) {
+        await req.ack
+        let message
+        try {
+          const result = await shareChannel(sk, req, target, bot)
+          message = result.message
+          log(`${key}: share to ${target.channel} for ${req.user}: ${result.shared ? 'sent' : 'refused'}`)
+        } catch (e) {
+          log(`${key}: share to ${target.channel} failed: ${e.message}`)
+          message = shareFailure(e, target)
+        }
+        // Keep confirmation outside the send's catch: failure to reply must never resend a link.
+        return await say(sk, req, message)
+      }
       const known = slackState.threads[key]?.sessionId ? slackState.threads[key] : null
       const [asker, files, names] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), Promise.all(Object.values(logins).map((l) => l.load()))])
       const services = enabledServices(logins, policy)
@@ -190,6 +207,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `• \`@${bot.name} <question or task>\` in a channel I'm in, or message me directly`,
       `• follow up in the same thread${req.isDM ? '' : ' (mention me again)'}: I remember it, and its files stay on my machine until it's been quiet for ${ttl}`,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
+      `• \`@${bot.name} share this channel to #destination\` (or \`把这个群分享给 #目标频道\`, \`/share #destination\`) — share this channel's link; invite me to the destination first`,
       now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
@@ -215,7 +233,8 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       return whisper(sk, req, `Sorry, I can't take requests from you: ${access.why}.`).catch((e) => log(`${key}: ${e.message}`))
     }
     // Commands (`@bot /model …`) are the controller's, as on GitHub: no box, no quota, never Codex.
-    const cmd = parseCommand(plainText(req.text, await namesOf(mentionedIds(req.text))), bot.name)
+    // A valid /share uses the same quota and scheduling as natural-language share requests.
+    const cmd = shareRequest(req.text, bot) ? null : parseCommand(plainText(req.text, await namesOf(mentionedIds(req.text))), bot.name)
     if (cmd?.name === 'help' || (!cmd && isHelp(req.text, bot))) {
       log(`${key}: help for ${who}`)
       return say(sk, req, await helpText(req, user))
@@ -235,6 +254,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       log(`${key}: ${who} is over today's limit`)
       return whisper(sk, req, `You've reached today's limit of ${cfg.slackDailyLimit} requests — it resets at 00:00 UTC.`).catch((e) => log(`${key}: ${e.message}`))
     }
+    if (cfg.slackDailyLimit) persist() // direct commands have no model turn's final save
     log(`${key}: request from ${who} via ${via}`)
     // 👀 the moment we have it — not queued behind other turns; the reply waits for it (handle()).
     req.ack = react(sk, req).catch((e) => log(`${key}: 👀 reaction failed: ${e.message}`))

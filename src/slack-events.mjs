@@ -44,6 +44,17 @@ export function isHelp(text, bot) {
   return /^\s*\/?help[.!?]*\s*$/i.test(rest)
 }
 
+/** An explicit channel-share command, before plainText() drops channel ids. Quoted examples and
+ * requests to implement/explain sharing must remain ordinary coding turns, never send messages. */
+export function shareRequest(text, bot) {
+  const rest = String(text || '').replace(new RegExp(`^\\s*<@${escapeRe(bot.userId)}(?:\\|[^>]*)?>\\s*`), '').trim()
+  const zh = /^(?:请\s*)?(?:(?:把\s*)?(?:这个|当前|本)\s*(?:频道|群聊|群)\s*分享|分享\s*(?:这个|当前|本)\s*(?:频道|群聊|群))\s*(?:给|到|至)\s*/.exec(rest)
+  const prefix = zh ?? /^(?:\/share\s+|(?:please\s+)?share\s+this\s+channel\s+(?:to|with|in)\s+)/i.exec(rest)
+  if (!prefix) return null
+  const target = /^(?:<#([CG][A-Z0-9]+)(?:\|[^<>\r\n]+)?>|#([CG][A-Z0-9]+))\s*[。.!！]?$/u.exec(rest.slice(prefix[0].length))
+  return target ? { channel: target[1] ?? target[2], language: zh ? 'zh' : 'en' } : null
+}
+
 /** The name a person goes by in the workspace. */
 export const displayName = (user) => user?.profile?.display_name || user?.real_name || user?.name || user?.id || 'someone'
 

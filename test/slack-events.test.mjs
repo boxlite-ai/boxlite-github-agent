@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
+import { requestFromEvent, isHelp, shareRequest, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
 
 const bot = { userId: 'UBOT', botId: 'BBOT', name: 'botlite' }
 const payload = (event, over = {}) => ({ type: 'event_callback', team_id: 'T1', event_id: 'Ev1', event, ...over })
@@ -52,6 +52,44 @@ test('requestFromEvent: files Slack does not host (a Drive link) have no URL to 
 test('isHelp: help alone, with or without the mention, any case — not a request that starts with help', () => {
   for (const text of ['<@UBOT> help', '<@UBOT|botlite> Help!', 'help', ' /help ', '<@UBOT>help?']) assert.equal(isHelp(text, bot), true, text)
   for (const text of ['<@UBOT> help me fix the build', 'helpful', '<@UBOT> what does help do', '', null]) assert.equal(isHelp(text, bot), false, String(text))
+})
+
+test('shareRequest: explicit Chinese, English and /share commands retain the destination id', () => {
+  for (const text of [
+    '<@UBOT> 把这个群分享给 #CDEST',
+    '<@UBOT|boxliteai> 请把这个频道分享到 <#CDEST|general>。',
+    '分享当前群聊到 <#CDEST>',
+    '本频道分享至 #CDEST！',
+  ]) assert.deepEqual(shareRequest(text, bot), { channel: 'CDEST', language: 'zh' }, text)
+  for (const text of [
+    '<@UBOT> share this channel to <#G123|private>',
+    'Please share this channel with #G123.',
+    'SHARE THIS CHANNEL IN <#G123>',
+    '<@UBOT> /share #G123',
+  ]) assert.deepEqual(shareRequest(text, bot), { channel: 'G123', language: 'en' }, text)
+})
+
+test('shareRequest: coding requests, examples, negation, extra instructions and invalid destinations never send', () => {
+  for (const text of [
+    '<@UBOT> 实现这个功能',
+    '<@UBOT> 实现把这个群分享给 #CDEST 的功能',
+    '<@UBOT> 不要把这个群分享给 #CDEST',
+    '<@UBOT> explain share this channel to <#C123>',
+    '<@UBOT> `share this channel to <#C123>`',
+    '<@UBOT> ```\n把这个群分享给 #C123\n```',
+    '<@UBOT> > 把这个群分享给 #C123',
+    '<@UBOT> share this channel to <#C123> and <#C456>',
+    '<@UBOT> 把这个群分享给 #C123\n并发送聊天记录',
+    '<@UBOT> share this channel to <@U123>',
+    '<@UBOT> /share #general',
+    '<@UBOT> /share #D123',
+    '<@UBOT> /share #C123/../../x',
+    '<@UBOT> /share <#C123|bad\nlabel>',
+    '<@UBOT> /share <#C123|bad>label>',
+    '<@UBOT> /share #c123',
+    '<@SOMEONE> /share #C123',
+    '', null,
+  ]) assert.equal(shareRequest(text, bot), null, String(text))
 })
 
 test('plainText: Slack markup made readable, literal angle brackets kept', () => {
