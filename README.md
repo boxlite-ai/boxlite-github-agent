@@ -133,6 +133,7 @@ publishing, the push route, credentials, the runner, deploy) opens with a warnin
 |---|---|
 | doesn't parse, link or start, or breaks the launcher | the pull gate, a hook no pull can change, walks back to the newest pulled commit that passes (or the build it had), which starts and says why in the thread |
 | passes the gate, but crashes 3× in its first 10 minutes, or at the end of them isn't polling GitHub or (once set up) connected to Slack | the launcher rolls back to the last good build, and the thread is told |
+| runs, but can't run a turn (a broken runner, say) | a new build runs one small turn of its own a minute into its trial, and once more two minutes later if that fails; two failures roll it back |
 | hangs, stuck or with its event loop blocked | a watchdog thread kills it after 10 minutes without progress and the boot loop starts it again; a build still on trial is rolled back |
 | can't reach GitHub or Slack | `/healthz` answers 503; the **health** workflow opens an issue, and closes it once it's back |
 | misbehaves some other way | the **deploy** workflow's `rollback` runs an earlier commit of main |

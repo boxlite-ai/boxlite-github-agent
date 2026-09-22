@@ -50,7 +50,7 @@ import { gitPushHandler } from './gitpush.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
 import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
 import { planWrite, publishWrite } from './publish.mjs'
-import { selfBuild, deployPlan, markGood, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS } from './deploy.mjs'
+import { selfBuild, deployPlan, markGood, goodBuild, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS, TRIAL_TURN, trialTurnFailure } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 import { toolBroker, enabledServices } from './tools.mjs'
@@ -580,14 +580,41 @@ if (deploying) {
   await persist()
 }
 // Running isn't enough to pass: a build that isn't polling — or, once Slack is set up, connected to
-// it — by the end of its trial fails it.
+// it — by the end of its trial fails it. So does a new one that can't run a turn (deploy.mjs); the
+// last good build doesn't take that test, since there would be nothing to roll back to.
+const failTheTrial = (why) => {
+  if (trialFailed) return
+  trialFailed = why
+  log(`build ${build.commit?.slice(0, 7)} ${why}: stopping, for the launcher to roll it back`)
+  process.kill(process.pid, 'SIGTERM')
+}
+async function trialTurn() {
+  const key = `${build.repo}#${TRIAL_TURN.number}`
+  const jobToken = jobs.issue(3_600_000, key, { who: 'the trial', writes: [], tools: [] })
+  try {
+    return trialTurnFailure(await runTurn({ bl, cfg: turnCfg(), key, req: { repo: build.repo, number: TRIAL_TURN.number, isPR: false }, pr: null, prompt: TRIAL_TURN.prompt, jobToken, proxyUrl, log }))
+  } catch (e) {
+    return `couldn't run a turn in its trial (${e.message.slice(0, 160)})`
+  } finally {
+    jobs.revoke(jobToken)
+  }
+}
+const trialTurns = build.commit && build.repo && build.commit !== goodBuild(stateDir)
+  ? (async () => {
+      await sleep(60_000) // live first, and polling
+      for (let attempt = 1; ; attempt++) {
+        const why = await trialTurn()
+        if (!why) return log(`build ${build.commit.slice(0, 7)} ran a turn in its trial`), null
+        if (attempt === 2) return failTheTrial(why), why
+        log(`build ${build.commit.slice(0, 7)} ${why}; once more in 2 minutes, in case that passes`)
+        await sleep(120_000)
+      }
+    })()
+  : Promise.resolve(null)
 setTimeout(async () => {
   const { ok, why } = health()
-  if (!ok) {
-    trialFailed = `wasn't healthy at the end of its ${TRIAL_MS / 60_000}-minute trial (${why})`
-    log(`build ${build.commit?.slice(0, 7)} ${trialFailed}: stopping, for the launcher to roll it back`)
-    return process.kill(process.pid, 'SIGTERM')
-  }
+  if (!ok) return failTheTrial(`wasn't healthy at the end of its ${TRIAL_MS / 60_000}-minute trial (${why})`)
+  if (await trialTurns) return // failed already; a turn still running at the end is waited for
   if (build.commit) markGood(stateDir, build.commit)
   if (state.deploy?.live && state.deploy.to === build.commit) {
     state.deploy = null

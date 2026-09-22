@@ -66,6 +66,25 @@ export function markGood(stateDir, commit) {
   writeFileSync(path.join(stateDir, 'good-build.json'), JSON.stringify({ commit, at: new Date().toISOString() }))
   rmSync(path.join(stateDir, 'boot.json'), { force: true })
 }
+/** The last good build's commit — null before the first. */
+export function goodBuild(stateDir) {
+  try {
+    return JSON.parse(readFileSync(path.join(stateDir, 'good-build.json'), 'utf8')).commit ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Polling proves little: a build whose session boxes can't run a turn polls fine — the chaos run's
+ * broken runner passed its trial, and every request got "sorry, the run failed". So a new build
+ * also runs one turn of its own in its trial (controller.mjs), just like a request's: a session box
+ * on the bot's own repo, the runner in it, Codex, its model calls through the proxy. Any answer at
+ * all shows they work; none fails the trial.
+ */
+export const TRIAL_TURN = { number: 0, prompt: 'This is the bot checking a new build of itself, not a request from anyone. Reply with exactly: OK' }
+/** Why a trial turn failed — null if it answered. */
+export const trialTurnFailure = (out) => (out?.message ? null : `couldn't run a turn in its trial (${String(out?.error || 'no answer').slice(0, 160)})`)
 /** A clean exit (drained, restarting) is no failure: the launcher counts crashes only. */
 export const cleanExit = (stateDir, commit) => writeFileSync(path.join(stateDir, 'boot.json'), JSON.stringify({ commit, tries: 0 }))
 /** A build that failed its trial: the launcher rolls it back on the next start, saying why. */
