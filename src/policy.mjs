@@ -32,6 +32,26 @@ export function mayUseSlack(user, home, where) {
   return { ok: true, why: "you're a member of this workspace" }
 }
 
+/**
+ * Who runs the bot from Slack — `@bot /model`, `/deploy`, `/pause`, `/resume`: the workspace's
+ * owners and admins, as Slack reports them. (On GitHub, it's BOT_ADMINS.)
+ */
+export const isSlackAdmin = (user) => Boolean(user && !user.deleted && (user.is_primary_owner || user.is_owner || user.is_admin))
+
+/**
+ * Where a Slack request may open a draft PR, from the bot's fork: `owner/name`, or `owner/*` for
+ * every public repo of that owner. Anyone mayUseSlack() lets in may ask; an admin's `/pause` stops
+ * it, on GitHub and in Slack alike. A PR is public, and says only that it was asked for in Slack.
+ */
+export const SLACK_PR_REPOS = ['boxlite-ai/*']
+export function slackPrAllowed(repo, allowed = SLACK_PR_REPOS) {
+  const [owner, name] = String(repo).toLowerCase().split('/')
+  return allowed.some((rule) => {
+    const [o, n] = rule.toLowerCase().split('/')
+    return o === owner && (n === '*' || n === name)
+  })
+}
+
 // What the bot may do in Linear, Notion and Google Workspace, tool by tool, as each service's MCP
 // server names its tools. The controller refuses every other call (tools.mjs), however Codex asks —
 // and a tool a service adds later stays off until it's listed here.

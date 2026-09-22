@@ -147,5 +147,5 @@ export function pendingAfter({ pending, running, rollback }) {
 
 // The bot's own trust boundary: who may publish, what gets checked and pushed, the credentials,
 // the runner and the deploy. A PR on the bot's own repo that touches these says so at the top.
-const SENSITIVE = [/^src\/(access|publish|gitpush|githubapp|proxy|chatgpt|main|controller|deploy|mentions|webhook|session|state|github|reply)\.mjs$/, /^box\//, /^deploy\//]
+const SENSITIVE = [/^src\/(access|publish|gitpush|prgrant|githubapp|proxy|chatgpt|main|controller|deploy|mentions|webhook|session|state|github|reply|policy|tools|oauth|slack|slack-channel|slack-events|slack-socket|slack-reply)\.mjs$/, /^box\//, /^deploy\//]
 export const sensitiveFiles = (paths) => paths.filter((p) => SENSITIVE.some((re) => re.test(p)))

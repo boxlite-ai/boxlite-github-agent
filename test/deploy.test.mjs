@@ -135,4 +135,7 @@ test('sensitiveFiles: the bot’s trust boundary — not its tests, docs or othe
   assert.deepEqual(sensitiveFiles(['src/access.mjs', 'src/publish.mjs', 'src/main.mjs', 'box/session.mjs', 'deploy/deploy.sh', 'src/codex.mjs', 'test/access.test.mjs', 'README.md', 'docs/pr.svg']), [
     'src/access.mjs', 'src/publish.mjs', 'src/main.mjs', 'box/session.mjs', 'deploy/deploy.sh',
   ])
+  // Who may use it in Slack, what the tools may do, the logins, and a Slack turn's PR grant are too.
+  const slack = ['src/policy.mjs', 'src/tools.mjs', 'src/oauth.mjs', 'src/prgrant.mjs', 'src/slack.mjs', 'src/slack-channel.mjs', 'src/slack-events.mjs', 'src/slack-socket.mjs', 'src/slack-reply.mjs']
+  assert.deepEqual(sensitiveFiles([...slack, 'src/slack-helpers.mjs', 'src/codex.mjs']), slack)
 })
