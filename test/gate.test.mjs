@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test, after } from 'node:test'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -15,8 +15,9 @@ const upstream = path.join(root, 'upstream')
 const box = path.join(root, 'botlite')
 const stateDir = path.join(root, 'state')
 // Under `node --test` this env has NODE_TEST_CONTEXT, which makes a nested failing `node --test`
-// exit 0: kept, so the gate is shown to shed it.
-const env = { ...process.env, STATE_FILE: path.join(stateDir, 'state.json') }
+// exit 0: kept, so the gate is shown to shed it. git runs as in the controller box, with no one's
+// global config (a pull.rebase there would refuse the hand edit below).
+const env = { ...process.env, STATE_FILE: path.join(stateDir, 'state.json'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 const git = (dir, args, extra = {}) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: { ...env, ...extra } }).trim()
 const commit = (message, files) => {
   for (const [f, text] of Object.entries(files)) writeFileSync(path.join(upstream, f), text)
@@ -53,11 +54,16 @@ test('gate: a pull runs up to its newest commit that passes; with none, on the b
   assert.equal(git(box, ['rev-parse', '--abbrev-ref', 'HEAD']), 'main') // on the branch, so the next pull tries again
   assert.deepEqual(takeRollback(), { from: unlinked, to: two, why: 'failed its pre-start check (test/start.test.mjs)' })
 
-  // Main breaks the launcher too: nothing this pull brings passes, so it stays on what it had.
+  // Main breaks the launcher too: nothing this pull brings passes, so it stays on what it had. A hand
+  // edit in the checkout, which the pull carried over, is kept in a patch before the reset.
   const broken = commit('four', { 'src/main.mjs': 'import {{ nope\n' })
+  writeFileSync(path.join(box, 'README.md'), 'v3, hotfixed by hand\n')
   git(box, ['pull', '--quiet', '--ff-only'])
   assert.equal(git(box, ['rev-parse', 'HEAD']), two)
   assert.deepEqual(takeRollback(), { from: broken, to: two, why: 'failed its pre-start check (src/main.mjs)' })
+  const patches = readdirSync(stateDir).filter((f) => /^gate-.*\.patch$/.test(f))
+  assert.equal(patches.length, 1)
+  assert.match(readFileSync(path.join(stateDir, patches[0]), 'utf8'), /\+v3, hotfixed by hand/)
 
   // Fixed on main, and pulled the way some tools run git, with GIT_DIR and GIT_WORK_TREE set: the
   // launcher's test runs git in a repo of its own, which they must not point back at this one.

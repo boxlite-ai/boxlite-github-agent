@@ -33,6 +33,14 @@ check() {
 }
 check && exit 0
 why="${failed# }"
+mkdir -p "$state"
+
+# Hand edits in the checkout would go with the resets below: keep them next to the state.
+if ! git diff --quiet HEAD; then
+  saved="$state/gate-$(date -u +%Y%m%dT%H%M%SZ).patch"
+  git diff HEAD > "$saved"
+  echo "$(date -u +%FT%TZ) gate: saved local changes to $saved"
+fi
 
 to="$old"
 for c in $(git rev-list --first-parent --max-count=20 "$old..$new" | sed 1d); do
@@ -41,5 +49,4 @@ for c in $(git rev-list --first-parent --max-count=20 "$old..$new" | sed 1d); do
 done
 git reset --quiet --hard "$to"
 echo "$(date -u +%FT%TZ) gate: ${new%"${new#???????}"} failed its pre-start check ($why) — running ${to%"${to#???????}"}"
-mkdir -p "$state"
 printf '{"from":"%s","to":"%s","at":"%s","why":"failed its pre-start check (%s)"}\n' "$new" "$to" "$(date -u +%FT%TZ)" "$why" > "$state/rollback.json"

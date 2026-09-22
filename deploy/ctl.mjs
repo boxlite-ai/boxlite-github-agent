@@ -97,6 +97,10 @@ function option(name, { value = false } = {}) {
   const i = argv.indexOf(name)
   if (i < 0) return value ? undefined : false
   const [, v] = argv.splice(i, value ? 2 : 1)
+  if (value && (v === undefined || v.startsWith('--'))) {
+    console.error(`${name} takes a value`)
+    process.exit(2)
+  }
   return value ? v : true
 }
 const includes = option('--includes', { value: true })
