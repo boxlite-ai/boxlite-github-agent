@@ -9,6 +9,7 @@ import { selfBuild, deployPlan, markGood, cleanExit, takeRollback, deployOutcome
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
 const C = 'c'.repeat(40)
+const D = 'd'.repeat(40)
 
 test('selfBuild: commit and owner/repo from origin (https or ssh)', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'self-'))
@@ -69,12 +70,27 @@ test('deployOutcome: live (on trial), rolled back, or not what was asked — sai
   assert.equal(deployOutcome({ pending: { ...pending, live: true }, running: A, rollback: { from: B, to: A } }), "@root ⚠️ `bbbbbbb` failed three times before its 10-minute trial was up, so I'm on `aaaaaaa` again. Fix it on `main` and `/deploy` again.")
   assert.match(deployOutcome({ pending, running: A, rollback: { from: B, to: A, why: 'failed its pre-start check (src/main.mjs)' } }), /^@root ⚠️ `bbbbbbb` failed its pre-start check \(src\/main\.mjs\), so I'm on `aaaaaaa` again\./)
   assert.equal(deployOutcome({ pending, running: C }), "@root ⚠️ that deploy didn't take: I'm running `ccccccc`, not `bbbbbbb`.")
+  assert.equal(deployOutcome({ pending: { from: A, to: C, by: 'root' }, running: D, rollback: { from: C, to: D } }), "@root ⚠️ `ccccccc` failed three times before its 10-minute trial was up, so I'm on `ddddddd`, the last good build. Fix it on `main` and `/deploy` again.")
+})
+
+test('deployOutcome: the gate stopped short of the deploy on a newer commit — live on trial, said once', () => {
+  const pending = { from: A, to: C, by: 'root' } // /deploy asked for C; B, between, is the newest that passes
+  const gate = { from: C, to: B, why: 'failed its pre-start check (test/start.test.mjs)' }
+  assert.equal(deployOutcome({ pending, running: B, rollback: gate }), '@root ⚠️ `ccccccc` failed its pre-start check (test/start.test.mjs), so I went live on `bbbbbbb` instead, the newest commit before it that passes. Fix it on `main` and `/deploy` again. If `bbbbbbb` fails in the next 10 minutes, I roll it back.')
+  const onTrial = pendingAfter({ pending, running: B, rollback: gate })
+  assert.deepEqual(onTrial, { ...pending, to: B, live: true })
+  // Every restart pulls the same broken main and the gate stops on B again: nothing new to say.
+  assert.equal(deployOutcome({ pending: onTrial, running: B, rollback: gate }), null)
+  assert.deepEqual(pendingAfter({ pending: onTrial, running: B, rollback: gate }), onTrial)
+  // But if B fails its trial, the thread hears it.
+  assert.match(deployOutcome({ pending: onTrial, running: A, rollback: { from: B, to: A } }), /^@root ⚠️ `bbbbbbb` failed three times before its 10-minute trial was up, so I'm on `aaaaaaa` again\./)
 })
 
 test('pendingAfter: a live deploy stays pending through its trial; a rollback or a miss ends it', () => {
   const pending = { from: A, to: B, by: 'root' }
   assert.deepEqual(pendingAfter({ pending, running: B }), { ...pending, live: true })
   assert.equal(pendingAfter({ pending, running: A, rollback: { from: B, to: A } }), null)
+  assert.equal(pendingAfter({ pending, running: A, rollback: { from: B, to: A, why: 'failed its pre-start check (src/main.mjs)' } }), null)
   assert.equal(pendingAfter({ pending, running: C }), null)
   assert.equal(pendingAfter({ pending: null, running: B }), null)
 })

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="656" viewBox="0 0 760 656" role="img" aria-labelledby="t">
-  <title id="t">The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull whose launcher doesn't pass its check is undone before it starts. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.</title>
+  <title id="t">The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull is checked before it starts (it must parse, pass the launcher's test and start offline): if it doesn't pass, the controller runs the newest pulled commit that does, or the build it had. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.</title>
   <style>
     :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
     @media (prefers-color-scheme: dark) {
@@ -77,7 +77,7 @@
   <!-- 6 the boot loop pulls main, the launcher starts it -->
   <line class="back" x1="680" y1="440" x2="482" y2="440" marker-end="url(#ah)"/>
   <text class="small" x="580" y="432" text-anchor="middle">boot loop pulls main</text>
-  <text class="small muted" x="590" y="458" text-anchor="middle">a bad pull is undone</text>
+  <text class="small muted" x="580" y="458" text-anchor="middle">newest commit that passes</text>
   <rect class="card" x="392" y="476" width="176" height="34" rx="7"/>
   <text x="480" y="498" text-anchor="middle">start new build</text>
 

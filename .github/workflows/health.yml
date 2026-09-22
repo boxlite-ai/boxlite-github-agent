@@ -19,6 +19,7 @@ jobs:
           URL: ${{ vars.CONTROLLER_URL }}
         run: |
           if [ -z "$URL" ]; then echo "::notice::set the CONTROLLER_URL repository variable to check the controller"; exit 0; fi
+          echo "checked=true" >> "$GITHUB_OUTPUT"
           for i in 1 2 3; do
             out="$(curl -sS --max-time 20 -w ' (HTTP %{http_code})' "$URL/healthz" 2>&1)" && case "$out" in *'(HTTP 200)') echo "ok"; exit 0 ;; esac
             sleep 20
@@ -46,7 +47,7 @@ jobs:
             else await github.rest.issues.create({ ...context.repo, title: 'boxlite-controller is down', body, labels: [label] })
 
       - name: Say it's back
-        if: success()
+        if: success() && steps.health.outputs.checked == 'true'
         uses: actions/github-script@v7
         with:
           script: |

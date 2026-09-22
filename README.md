@@ -81,7 +81,7 @@ there. People are kept by GitHub id, since a login can change hands.
 
 ### Improving itself
 
-![The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull whose launcher doesn't pass its check is undone before it starts. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.](docs/deploy.svg)
+![The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. A pull is checked before it starts (it must parse, pass the launcher's test and start offline): if it doesn't pass, the controller runs the newest pulled commit that does, or the build it had. Live, it says so in the thread and is on trial for 10 minutes; a build that fails three times in its trial is rolled back to the last good one, and the thread is told.](docs/deploy.svg)
 
 A bot PR that touches its own trust boundary (access, publishing, the push route, credentials, the
 runner, deploy) opens with a warning.
@@ -90,8 +90,8 @@ runner, deploy) opens with a warning.
 
 | If the new build… | then |
 |---|---|
-| breaks the launcher, or doesn't parse | the pull gate, a hook no pull can change, undoes the pull; the old build starts and says why in the thread |
-| fails to start, or fails 3× in its first 10 minutes | the launcher rolls back to the last good build, and the thread is told |
+| doesn't parse, link or start, or breaks the launcher | the pull gate, a hook no pull can change, walks back to the newest pulled commit that passes (or the build it had), which starts and says why in the thread |
+| passes the gate, but fails 3× in its first 10 minutes | the launcher rolls back to the last good build, and the thread is told |
 | hangs: up, but not polling | `/healthz` answers 503; the **health** workflow opens an issue, and closes it once it's back |
 | misbehaves some other way | the **deploy** workflow's `rollback` runs an earlier commit of main |
 
@@ -133,7 +133,7 @@ fenced as untrusted context, never as instructions.
 | `src/github.mjs` · `reply.mjs` | controller | GitHub REST as the bot: 👀 and replies |
 | `box/session.mjs` | session box | restore → stand-in login → checkout → Codex → push commits → seal |
 | `deploy/deploy.sh` · `ctl.mjs` | your terminal | create the controller; operate it |
-| `deploy/post-merge.sh` | controller | the pull gate: undoes a pull whose launcher doesn't pass its check |
+| `deploy/post-merge.sh` | controller | the pull gate: a pull runs only up to its newest commit that passes |
 | `.github/workflows/` | GitHub Actions | `test` every PR; `deploy` from the `production` environment; `health` |
 
 ## Run your own
@@ -164,6 +164,7 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
 Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart | rollback <commit> | admins <logins>`.
 `restart` pulls the tracked branch and lets running turns finish first; `rollback` runs an earlier
 commit of it until the next restart; `admins` replaces `BOT_ADMINS` and restarts, with no redeploy.
+Add `--wait` to any of the three to wait until the next start is live and see which build it is.
 
 ### From GitHub
 

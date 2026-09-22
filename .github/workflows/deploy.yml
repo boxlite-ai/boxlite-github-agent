@@ -4,8 +4,9 @@ name: deploy
 #   restart   pull main and restart onto it (running turns finish first)
 #   handover  give the controller its tokens and keys from the environment (after a rotation)
 #   rollback  run an earlier commit of main until the next restart or /deploy
-# Each run waits until the build it expects is live, and fails with how its start went if not (the
-# boot lines only: this log is public).
+# Each run waits for the next start to go live, and fails if that isn't this commit of main (or,
+# for a rollback, the commit asked for), showing how the start went: the boot lines only, since
+# this log is public.
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +29,8 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -48,23 +51,17 @@ jobs:
           GITHUB_APP_KEY="$key" node deploy/ctl.mjs github-app
           rm -f "$key"
           node deploy/ctl.mjs hook
-          node deploy/ctl.mjs admins "$BOT_ADMINS"
+          node deploy/ctl.mjs admins "$BOT_ADMINS" --includes "$GITHUB_SHA"
 
       - name: Restart onto main
         if: inputs.action == 'restart'
         env:
           BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
-        run: node deploy/ctl.mjs restart
+        run: node deploy/ctl.mjs restart --includes "$GITHUB_SHA"
 
       - name: Roll back
         if: inputs.action == 'rollback'
         env:
           BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
           COMMIT: ${{ inputs.commit }}
-        run: node deploy/ctl.mjs rollback "$COMMIT"
-
-      - name: Wait until it's live
-        env:
-          BOXLITE_API_KEY: ${{ secrets.BOXLITE_API_KEY }}
-          COMMIT: ${{ inputs.action == 'rollback' && inputs.commit || github.sha }}
-        run: node deploy/ctl.mjs wait-live "$COMMIT"
+        run: node deploy/ctl.mjs rollback "$COMMIT" --wait

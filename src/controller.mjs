@@ -136,8 +136,8 @@ const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
 // health workflow checks it). Before the first poll it counts from the start.
 let lastPoll = Date.now()
 const health = () => {
-  const quiet = Math.round((Date.now() - lastPoll) / 60_000)
-  return quiet < 10 ? { ok: true } : { ok: false, why: `no successful poll for ${quiet} minutes` }
+  const quiet = Date.now() - lastPoll
+  return quiet < 10 * 60_000 ? { ok: true } : { ok: false, why: `no successful poll for ${Math.floor(quiet / 60_000)} minutes` }
 }
 const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, health })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
