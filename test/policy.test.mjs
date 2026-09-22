@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mayUseSlack as mayUse } from '../src/policy.mjs'
+import { mayUseSlack as mayUse, isSlackAdmin, slackPrAllowed, SLACK_PR_REPOS } from '../src/policy.mjs'
 
 // What any access policy must keep true. Add the cases that pin down yours — members, guests,
 // Slack Connect — next to these.
@@ -48,4 +48,19 @@ test('mayUse (members only): members of the workspace or its Grid org — not gu
   assert.equal(ok({ ...member, is_restricted: true, is_ultra_restricted: true }), false)
   const shared = mayUse(member, home, { extShared: true })
   assert.deepEqual(shared, { ok: false, why: 'this channel is shared with another organization; ask me in one of ours, or in a DM' })
+})
+
+test("isSlackAdmin: the workspace's owners and admins run the bot from Slack — not members, not a deactivated owner", () => {
+  const member = { id: 'U1', team_id: 'T1' }
+  assert.equal(isSlackAdmin(member), false)
+  for (const role of ['is_primary_owner', 'is_owner', 'is_admin']) assert.equal(isSlackAdmin({ ...member, [role]: true }), true, role)
+  assert.equal(isSlackAdmin({ ...member, is_owner: true, deleted: true }), false)
+  assert.equal(isSlackAdmin(undefined), false)
+})
+
+test('slackPrAllowed: owner/name or owner/*, any case — never another owner, nor a name that only starts alike', () => {
+  const rules = ['boxlite-ai/*', 'acme/app']
+  for (const repo of ['boxlite-ai/boxlite', 'BoxLite-AI/Boxlite-Github-Agent', 'acme/app', 'ACME/App']) assert.equal(slackPrAllowed(repo, rules), true, repo)
+  for (const repo of ['acme/app2', 'acme/other', 'boxlite-ai-evil/x', 'someone/boxlite-ai', 'boxlite/ai', '']) assert.equal(slackPrAllowed(repo, rules), false, repo)
+  assert.deepEqual(SLACK_PR_REPOS, ['boxlite-ai/*']) // as shipped: the team's own public repos
 })

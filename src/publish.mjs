@@ -8,6 +8,7 @@
 //
 // Everything that came out of the box is untrusted — Codex has sudo in there and can rewrite the
 // runner — so every rule lives here, and the controller never parses git data the box made.
+import { createHash } from 'node:crypto'
 import { sensitiveFiles } from './deploy.mjs'
 
 export const LIMITS = { files: 100, lines: 5000, commits: 50, blobBytes: 1024 * 1024, treeCalls: 60 }
@@ -69,31 +70,62 @@ export async function planWrite({ gh, app, me, req, pr, key, knownFork, log = ()
       ? `as one more commit on draft PR ${target.repo}#${existing.number}`
       : `as a new draft PR into ${target.repo === req.repo ? '' : `${target.repo}:`}${target.base}${pr ? " (this PR's branch)" : ''}`
 
-  const plan = {
+  return withOpen({
     branch, staging, base, target, existing, describe,
     branchExists: Boolean(tip),
     baseUrl: `https://github.com/${tip ? fork : req.repo}.git`,
     fork, // null until open() when the bot has no fork of this repo yet
+  }, { gh, app, upstream: req.repo, own, key, log })
+}
+
+/** A plan's open(): on the box's first push, fork (if needed), sync it, clear a stale staging branch, mint the push token. */
+function withOpen(plan, { gh, app, upstream, own = false, key, log }) {
+  return Object.assign(plan, {
     token: null,
     opened: null,
-    /** On the box's first push: fork (if needed), sync it, clear a stale staging branch, mint the push token. */
     open() {
       plan.opened ??= (async () => {
-        const f = plan.fork && own ? { full_name: plan.fork, name: plan.fork.split('/')[1] } : await ensureFork(gh, req.repo)
+        const f = plan.fork && own ? { full_name: plan.fork, name: plan.fork.split('/')[1] } : await ensureFork(gh, upstream)
         if (!own) {
           // Level with upstream, so the push carries only the turn's own commits: a token without
           // workflow permission can't push commits that change workflows, even upstream's.
           await gh.json('POST', `/repos/${f.full_name}/merge-upstream`, { body: { branch: f.default_branch } }).catch((e) => log(`${key}: syncing ${f.full_name}: ${e.message}`))
         }
-        await gh.request('DELETE', `/repos/${f.full_name}/git/refs/heads/${staging}`) // a leftover from a turn that never finished
+        await gh.request('DELETE', `/repos/${f.full_name}/git/refs/heads/${plan.staging}`) // a leftover from a turn that never finished
         plan.fork = f.full_name
         plan.token = await app.token(f.name)
         return { repo: plan.fork, token: plan.token }
       })()
       return plan.opened
     },
-  }
-  return plan
+  })
+}
+
+/**
+ * A PR asked for in Slack: planned when the box is ready to push (prgrant.mjs), not before the
+ * turn — a Slack thread belongs to no repo. A draft PR into `repo`'s default branch, built on
+ * `base`, the commit the box's clone started from, which must be on that branch. Every request
+ * gets a new branch, named by a hash of `id` (the Slack thread and message): the fork is public,
+ * and Slack's ids are the team's.
+ */
+export async function planSlackWrite({ gh, app, me, repo, base, id, knownFork, log = () => {} }) {
+  const upstream = await gh.json('GET', `/repos/${repo}`)
+  if (upstream.private) throw new Error(`${upstream.full_name} is private`)
+  const onBranch = await orNull(gh.json('GET', `/repos/${upstream.full_name}/compare/${upstream.default_branch}...${base}`))
+  if (!['behind', 'identical'].includes(onBranch?.status)) throw new Error(`${base.slice(0, 7)} isn't on ${upstream.full_name}'s ${upstream.default_branch}: build on it`)
+  const name = `slack-${createHash('sha256').update(id).digest('hex').slice(0, 12)}`
+  const key = `${upstream.full_name} (Slack)`
+  return withOpen({
+    branch: `botlite/${name}`,
+    staging: `botlite-staging/${name}`,
+    base,
+    target: { repo: upstream.full_name, base: upstream.default_branch },
+    existing: null,
+    describe: `as a new draft PR into ${upstream.full_name}:${upstream.default_branch}`,
+    branchExists: false,
+    baseUrl: `https://github.com/${upstream.full_name}.git`,
+    fork: (await findFork(gh, me, upstream, knownFork))?.full_name ?? null,
+  }, { gh, app, upstream: upstream.full_name, key, log })
 }
 
 async function ensureFork(gh, repo) {
@@ -152,14 +184,21 @@ export function checkChange({ base, compare, entries, limits = LIMITS }) {
   return { ok: true, flagged: files.map((f) => f.filename).filter((p) => DEPENDENCY.test(p.split('/').pop())) }
 }
 
+/**
+ * Where a change was asked for, for its public commit and PR: the GitHub thread and who asked
+ * there; for Slack (`req.origin`), only that it was Slack — never who, where or a link: those are
+ * the team's.
+ */
+const requestedBy = (req) => req.origin ?? `Requested by @${req.author} in ${req.url}`
+
 /** Title, body and squash-commit message from the box's commit messages, minus authorship trailers. */
 export function describeChange(commits, req) {
   const messages = commits.map((c) => c.commit.message.replace(TRAILER, '').trim()).filter(Boolean)
   const [first = '', ...others] = messages
   const [subject, ...rest] = first.split('\n')
-  const title = subject.trim().slice(0, 120) || `Changes requested in ${req.repo}#${req.number}`
+  const title = subject.trim().slice(0, 120) || (req.origin ? 'Changes requested from Slack' : `Changes requested in ${req.repo}#${req.number}`)
   const body = [rest.join('\n').trim(), ...others].filter(Boolean).join('\n\n').slice(0, 20_000)
-  const message = [title, body, `Requested by @${req.author} in ${req.url}`].filter(Boolean).join('\n\n')
+  const message = [title, body, requestedBy(req)].filter(Boolean).join('\n\n')
   return { title, body, message }
 }
 
@@ -169,7 +208,7 @@ function prBody({ body, req, flagged, sensitive }) {
     ...(sensitive.length ? [`> [!WARNING]\n> This changes the bot's own trust boundary — ${list(sensitive)}. Review it closely: once merged, an admin's \`/deploy\` puts it live.`] : []),
     body || '_No description._',
     '---',
-    `Requested by @${req.author} in ${req.url}. Written by an AI agent (Codex, in an isolated [BoxLite](https://boxlite.ai) microVM) — please review it like any outside contribution.`,
+    `${requestedBy(req)}. Written by an AI agent (Codex, in an isolated [BoxLite](https://boxlite.ai) microVM) — please review it like any outside contribution.`,
     ...(flagged.length ? [`**Dependencies changed:** ${list(flagged)} — check these closely.`] : []),
   ].join('\n\n')
 }

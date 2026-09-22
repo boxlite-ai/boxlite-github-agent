@@ -156,9 +156,22 @@ test('slackSessionPrompt: identity, machine, fenced thread with its history, the
 
 test('slackFollowUpPrompt: what was said since the last reply, then only the new request', () => {
   const p = slackFollowUpPrompt({ ...talk, since: [{ who: '@erin', text: 'I tried node 22, same error' }] })
-  assert.match(p, /^New request in the same thread\.\n\n<slack>\nMessages in the thread since your last reply, oldest first:\n\n@erin: I tried node 22, same error\n\nRequest from @dave — https:\/\/acme/)
+  assert.match(p, /^New request in the same thread\.\n\nOpening pull requests isn't available right now \(PR writing is off\)[^\n]*\n\n<slack>\nMessages in the thread since your last reply, oldest first:\n\n@erin: I tried node 22, same error\n\nRequest from @dave — https:\/\/acme/)
   assert.match(p, /As before, your final message is posted verbatim as @botlite's reply in this thread\.$/)
   assert.doesNotMatch(slackFollowUpPrompt(talk), /since your last reply/)
+})
+
+test('Slack prompts: how to ask for a PR, that it is public, and where — or why not, and a patch instead', () => {
+  const prs = { ok: true, repos: ['boxlite-ai/*'] }
+  for (const p of [slackSessionPrompt({ ...talk, prs }), slackFollowUpPrompt({ ...talk, prs })]) {
+    assert.match(p, /draft pull request, opened on GitHub from the bot's own account,\ninto a public repo in boxlite-ai\/\*\./)
+    assert.match(p, /write pr\.json in your working directory:\n\{"repo": "owner\/name", "dir": "<the clone's path, relative to your working directory>"\}/)
+    assert.match(p, /can't push or use gh yourself: this is the only way/)
+    assert.match(p, /A PR is public[\s\S]*nothing from this thread or the team's tools that shouldn't be public\./)
+  }
+  const off = slackSessionPrompt({ ...talk, prs: { ok: false, why: 'an admin (@Dorian) paused PR writing' } })
+  assert.match(off, /Opening pull requests isn't available right now \(an admin \(@Dorian\) paused PR writing\): if you're asked for one, say so, and put the change in your reply as a patch\./)
+  assert.doesNotMatch(off, /pr\.json/)
 })
 
 test('codexArgs: each tool service is an MCP server at the controller, on the job token, showing only its listed tools', () => {
@@ -178,7 +191,7 @@ test('prompts: the tools, their names and whose account they use; changes only w
   assert.match(slackSessionPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /tools for the team's Notion \(named mcp__notion__…\)[\s\S]*They only read\./)
   assert.doesNotMatch(slackSessionPrompt(talk), /You also have tools/)
   assert.doesNotMatch(p, /This thread is public/) // a workspace's members only
-  assert.match(slackFollowUpPrompt({ ...talk, services }), /^New request in the same thread\.\n\nTools this turn: Linear and Google Docs — as before, change things only when asked, and say what you changed\.\n\n<slack>/)
+  assert.match(slackFollowUpPrompt({ ...talk, services }), /^New request in the same thread\.\n\nTools this turn: Linear and Google Docs — as before, change things only when asked, and say what you changed\.\n\nOpening pull requests isn't available[^\n]*\n\n<slack>/)
   assert.match(slackFollowUpPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /Tools this turn: Notion \(they only read\)\./)
 })
 

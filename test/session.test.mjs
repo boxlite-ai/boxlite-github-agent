@@ -211,6 +211,19 @@ test('runTurn: a Slack turn — its own box, volume and context key; files on st
   assert.deepEqual(sent, { prompt: 'P', files: [{ path: 'slack-files/1/a.txt', data: 'aGk=' }] }) // path and data only
 })
 
+test('runTurn: a Slack turn that may open a PR gets where to ask for it and push; no other turn does', async () => {
+  const run = async (over) => {
+    const bl = fakeBoxlite({ attach: async (id, e, { onStdout }) => (onStdout(Buffer.from(lines({ type: 'botlite.result', code: 0, lastMessage: 'ok' }))), 0) })
+    await runTurn({ bl, cfg, prompt: 'P', ...via, ...over })
+    return bl.calls.find((c) => c[0] === 'startExec')[2].env
+  }
+  const slackKey = 'T01/C01/1712345678.000100'
+  const prs = await run({ key: slackKey, slack: true, prs: true })
+  assert.deepEqual([prs.PR_URL, prs.PUSH_URL, prs.PUSH_REF], ['https://8788-d-abc.proxy.boxlite.ai/pr', 'https://8788-d-abc.proxy.boxlite.ai/git', undefined])
+  assert.equal('PR_URL' in (await run({ key: slackKey, slack: true })), false) // PR writing off: nowhere to ask
+  assert.equal('PR_URL' in (await run({ key: 'acme/app#7', req, prs: true })), false) // a GitHub thread plans its PRs before the turn
+})
+
 test('runTurn: starts a stopped box before the exec; leaves a running one alone', async () => {
   for (const [status, expectStart] of [['stopped', true], ['running', false]]) {
     const bl = fakeBoxlite({ getBox: async () => ({ id: 'box-1', status }) , attach: async (id, e, { onStdout }) => (onStdout(Buffer.from(lines({ type: 'botlite.result', code: 0, lastMessage: 'ok' }))), 0) })

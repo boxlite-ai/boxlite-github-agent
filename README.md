@@ -4,9 +4,9 @@ Mention **@boxliteai** in any public GitHub issue or pull request, or in your te
 answers in the thread. For a repo's maintainers it can also open a draft PR. There's nothing to
 install on GitHub: it's a regular GitHub account. Each request runs
 [Codex CLI](https://github.com/openai/codex) in that thread's own [BoxLite](https://boxlite.ai)
-microVM, with a full shell and network, so it can run the code before it answers. In Slack it also
-gets the files attached to a message, and it can read your team's Linear, Notion and Google
-Workspace as its own accounts.
+microVM, with a full shell and network, so it can run the code before it answers. Slack gets all of
+that too, draft PRs and the admin commands included. There it also gets the files attached to a
+message, and it can read your team's Linear, Notion and Google Workspace as its own accounts.
 
 ```
 @boxliteai why does `npm test` fail on this PR?                        (GitHub)
@@ -71,6 +71,8 @@ team's conversations. So the two sides share nothing a box can reach:
 | Its volume | `botlite-context` (`VOLUME`) | `botlite-slack-context` (`SLACK_VOLUME`) |
 | Its context key comes from | `CONTEXT_SECRET` | `SLACK_CONTEXT_SECRET` |
 | The team's tools | only when one of the bot's admins asks | yes |
+| Who may ask for a PR | the bot's admins, the repo's maintainers, people an admin added | every member, into `boxlite-ai/*` (`SLACK_PR_REPOS`) |
+| Who runs the commands | the bot's admins (`BOT_ADMINS`) | the workspace's owners and admins |
 
 A GitHub box never mounts the volume where Slack's threads are kept. Nor the other way round:
 BoxLite can't mount a volume read-only yet, and a Slack box that could write to GitHub's volume
@@ -108,7 +110,10 @@ shows only how the controller started, never a line about a thread.
 | `@boxliteai /model [model] [effort]` | admins | show, or set, the model and reasoning effort every turn runs on, GitHub's and Slack's, e.g. `/model gpt-6-astra xhigh`; `/model default` undoes it |
 | `@boxliteai /deploy` | admins | put what's merged on `main` live now (see below) |
 
-These are GitHub comments. In Slack there's only `@boxliteai help`.
+These are GitHub comments. In Slack, the workspace's owners and admins run the same ones on the
+same state: `@boxliteai /model …`, `/deploy` (it reports back in that Slack thread), `/pause` and
+`/resume`, so one `/pause` stops PR writing on both. `/add`, `/remove` and `/list` stay on GitHub:
+in Slack every member may ask for PRs.
 
 `/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
 pinned Codex, since a bad one would fail every turn.
@@ -147,6 +152,22 @@ Mention `@boxliteai` in a channel it's in, or send it a direct message. It answe
 and a follow-up there (a mention again, in a channel) continues the same session. Attach logs,
 screenshots or code to the message and the box gets them too: up to 5 MB a file and 8 MB a message.
 They reach that thread's box only, on the exec's stdin, and never go on a volume.
+
+**A PR from Slack.** Ask for a change as a PR and it opens a draft PR from the bot's fork, into a
+public repo `SLACK_PR_REPOS` in `src/policy.mjs` allows (`boxlite-ai/*` as shipped). A Slack thread
+belongs to no repo, so the PR is asked for at the end of the turn:
+
+1. Codex clones the repo in its working directory, commits the change there, and leaves `pr.json`
+   (which repo, which clone).
+2. The runner asks the controller for the push (`/pr`, with the turn's job token). The controller
+   checks: PR writing on, the repo allowed, the commits built on its default branch, one PR per
+   turn. Then the runner pushes to the one staging branch the controller names.
+3. After the turn, it's GitHub's path: the same checks on GitHub's own diff, one squashed commit by
+   the bot, and a draft PR, whose link goes under the answer.
+
+The PR is public, and says only that it was asked for in Slack. No names, links or Slack ids go into
+it, nor into its branch's name. Codex is told its commit messages become the PR's title and
+description.
 
 **Who can use it** is `mayUseSlack` in `src/policy.mjs`. It runs before any quota is spent or box
 started, and a refused person gets an explanation only they can see. As shipped it's **members
@@ -222,7 +243,7 @@ public reply. Keep the bot's accounts narrow, and add changes one at a time.
 | Notion and Google logins | hold and refresh them | never | never |
 | BoxLite API key | placeholder (a BoxLite secret) | never | never |
 | ChatGPT login | holds and refreshes | never (a stand-in login) | never |
-| Job token | issues, revokes | its own turn only: model calls, a write turn's one push, the tools its turn was given | never |
+| Job token | issues, revokes | its own turn only: model calls, a write turn's one push (a Slack turn asks for it at `/pr`), the tools its turn was given | never |
 | Thread context key | derives, from its side's secret | its own thread only | never (sealed bytes only) |
 | Webhook secret | holds | never | never |
 
@@ -255,6 +276,7 @@ else would go stale.
 | `src/codex.mjs` | controller | `codex exec` / `resume` arguments, prompts, event parsing |
 | `src/access.mjs` | controller | who may publish on GitHub; `/help` and the admin commands |
 | `src/gitpush.mjs` · `githubapp.mjs` | controller | a write turn's one push: job token in, App token out, one ref |
+| `src/prgrant.mjs` | controller | `/pr`: a Slack turn asks for its PR's push when its work is done |
 | `src/publish.mjs` | controller | plan a write turn; check the pushed commit, squash it, draft PR |
 | `src/boxlite.mjs` | controller | BoxLite REST, exec attach over WebSocket |
 | `src/github.mjs` · `reply.mjs` | controller | GitHub REST as the bot: 👀 and replies |

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { branchesFor, checkChange, describeChange, treeEntries, planWrite, publishWrite, pushFailure, LIMITS } from '../src/publish.mjs'
+import { branchesFor, checkChange, describeChange, treeEntries, planWrite, planSlackWrite, publishWrite, pushFailure, LIMITS } from '../src/publish.mjs'
 
 const BASE = 'b'.repeat(40)
 const TIP = 't'.repeat(40)
@@ -214,6 +214,39 @@ test('publishWrite: checks the pushed commit, squashes it as the bot onto the ba
   assert.match(pull.body, /^It was null\.\n\nAdd a test\n\n---\n\nRequested by @alice in https:\/\/github\.com\/acme\/app\/issues\/7#issuecomment-1\. Written by an AI agent/)
   assert.match(pull.body, /\*\*Dependencies changed:\*\* `package\.json` — check these closely\./)
   assert.equal(t.gh.called('DELETE', /botlite-staging/).length, 1)
+})
+
+test('planSlackWrite: a draft PR into the default branch, from the commit the box built on — which must be on it', async () => {
+  const onMain = ['GET', new RegExp(`^/repos/acme/app/compare/main\\.\\.\\.${BASE}$`), { status: 'behind' }]
+  const gh = fakeGithub([upstream, onMain, ourFork])
+  const id = 'T01ABC/C02DEF/1712345678.000100@1712345699.000200'
+  const plan = await planSlackWrite({ gh, app: fakeApp(), me, repo: 'acme/app', base: BASE, id })
+  assert.match(plan.branch, /^botlite\/slack-[0-9a-f]{12}$/)
+  assert.equal(plan.staging, plan.branch.replace('botlite/', 'botlite-staging/'))
+  assert.doesNotMatch(`${plan.branch} ${plan.staging} ${plan.describe}`, /T01ABC|C02DEF|1712345678/) // the fork is public; Slack's ids are the team's
+  assert.deepEqual([plan.base, plan.target, plan.branchExists, plan.fork, plan.existing], [BASE, { repo: 'acme/app', base: 'main' }, false, 'botlite/app', null])
+  assert.equal((await planSlackWrite({ gh, app: fakeApp(), me, repo: 'acme/app', base: BASE, id: `${id}x` })).branch === plan.branch, false) // each request, its own PR
+  assert.equal(typeof plan.open, 'function')
+
+  for (const status of ['ahead', 'diverged']) {
+    const off = fakeGithub([upstream, ['GET', /\/compare\//, { status }]])
+    await assert.rejects(planSlackWrite({ gh: off, app: fakeApp(), me, repo: 'acme/app', base: BASE, id }), /bbbbbbb isn't on acme\/app's main: build on it/)
+  }
+  await assert.rejects(planSlackWrite({ gh: fakeGithub([upstream]), app: fakeApp(), me, repo: 'acme/app', base: BASE, id }), /isn't on acme\/app's main/) // unknown to GitHub
+  const secret = fakeGithub([['GET', /^\/repos\/acme\/app$/, { name: 'app', full_name: 'acme/app', default_branch: 'main', private: true }]])
+  await assert.rejects(planSlackWrite({ gh: secret, app: fakeApp(), me, repo: 'acme/app', base: BASE, id }), /acme\/app is private/)
+})
+
+test('publishWrite: a PR asked for in Slack says only that — never who asked, where, or a link', async () => {
+  const t = await pushedTurn({ files: [file('src/a.js')], plan: { branch: 'botlite/slack-0123456789ab', staging: 'botlite-staging/acme/app/7' } })
+  const slack = { repo: 'acme/app', origin: 'Requested from Slack' }
+  assert.equal(await publishWrite({ gh: t.gh, app: t.app, me, plan: t.plan, req: slack, result: { pushed: PUSHED } }), '📬 Opened draft PR https://github.com/acme/app/pull/12.')
+  assert.equal(t.gh.called('POST', /git\/commits$/)[0].body.message, 'Fix the crash\n\nIt was null.\n\nAdd a test\n\nRequested from Slack')
+  const pull = t.gh.called('POST', /pulls$/)[0].body
+  assert.equal(pull.head, 'botlite:botlite/slack-0123456789ab')
+  assert.match(pull.body, /\n---\n\nRequested from Slack\. Written by an AI agent/)
+  assert.doesNotMatch(JSON.stringify(t.gh.calls), /slack\.com|undefined/)
+  assert.equal(describeChange([], slack).title, 'Changes requested from Slack')
 })
 
 test('publishWrite: a PR on the bot’s own repo that touches its trust boundary says so, at the top and in the reply', async () => {

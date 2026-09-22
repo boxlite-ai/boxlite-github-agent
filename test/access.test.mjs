@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMMANDS, parseCommand, writeAccess, helpText, runCommand, modelOf } from '../src/access.mjs'
+import { COMMANDS, parseCommand, writeAccess, helpText, runCommand, runSlackCommand, modelOf } from '../src/access.mjs'
 
 test('parseCommand: `@bot /word` at the start of a comment, or a comment that is only `@bot help`', () => {
   assert.deepEqual(parseCommand('@boxliteai /add @alice', 'boxliteai'), { name: 'add', arg: '@alice' })
@@ -149,6 +149,34 @@ test('helpText: an admin has no daily limit', () => {
 test('helpText: says which model turns run on', async () => {
   const help = await runCommand({ name: 'help', arg: '' }, withModels({ grants: {}, codex: { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: 'T' } }, { req: req() }))
   assert.match(help, /\*\*Model:\*\* `gpt-6-astra` at `xhigh` effort\./)
+})
+
+test('runSlackCommand: the workspace’s admins run the bot from Slack, on the same state; everyone else is told no', async () => {
+  const state = { grants: {}, paused: null, codex: null, deploy: null }
+  const at = new Date('2026-09-22T10:00:00Z')
+  const slack = (over = {}) => ({ state, isAdmin: true, who: '<@U1>', by: 'Dorian', reply: { slack: { channel: 'C1', threadTs: '1.1' } }, models: async () => CATALOG, defaults: { model: 'gpt-5.6-sol', effort: null }, help: async () => 'HELP', now: at, ...over })
+  assert.equal(await runSlackCommand({ name: 'model', arg: 'gpt-6-astra xhigh' }, slack()), '<@U1> ✅ turns now run on `gpt-6-astra` at `xhigh` effort.')
+  assert.deepEqual(state.codex, { model: 'gpt-6-astra', effort: 'xhigh', by: 'Dorian', at: '2026-09-22T10:00:00.000Z' }) // the one setting, GitHub's too
+  assert.match(await runSlackCommand({ name: 'pause', arg: '' }, slack()), /^<@U1> ⏸️ PR writing is paused everywhere, on GitHub and here\./)
+  assert.deepEqual(state.paused, { by: 'Dorian', at: '2026-09-22T10:00:00.000Z' })
+  assert.equal(writeAccess({ state, admins: new Map(), req: req() }).why, 'an admin (@Dorian) paused PR writing') // GitHub sees it
+  assert.equal(await runSlackCommand({ name: 'resume', arg: '' }, slack()), '<@U1> ▶️ PR writing is back on.')
+  assert.equal(state.paused, null)
+
+  const A = 'a'.repeat(40)
+  const C = 'c'.repeat(40)
+  const plan = { from: A, to: C, status: 'ahead', commits: [{ sha: C, title: 'fix: two (#13)' }] }
+  assert.match(await runSlackCommand({ name: 'deploy', arg: '' }, slack({ deploy: async () => plan })), /^<@U1> 🚀 deploying `aaaaaaa` → `ccccccc`, 1 commit:/)
+  assert.deepEqual(state.deploy, { from: A, to: C, by: 'Dorian', at: '2026-09-22T10:00:00.000Z', reply: { slack: { channel: 'C1', threadTs: '1.1' } } }) // it reports back in this thread
+
+  const member = { grants: {}, paused: null, codex: null, deploy: null }
+  for (const name of ['model', 'deploy', 'pause', 'resume', 'add']) {
+    assert.equal(await runSlackCommand({ name, arg: '' }, slack({ state: member, isAdmin: false })), `<@U1> only this workspace's admins can use \`/${name}\`.`)
+  }
+  assert.deepEqual(member, { grants: {}, paused: null, codex: null, deploy: null })
+  assert.match(await runSlackCommand({ name: 'add', arg: '@alice' }, slack()), /`\/add` is a GitHub command: it says who may ask me for PRs in a GitHub repo\. Here, every member may\./)
+  assert.equal(await runSlackCommand({ name: 'help', arg: '' }, slack({ isAdmin: false })), 'HELP')
+  assert.equal(await runSlackCommand({ unknown: 'frob' }, slack({ isAdmin: false })), "I don't know `/frob`.\n\nHELP")
 })
 
 test('runCommand /deploy: shows what goes live and records it; refuses nothing new, rewritten history, non-admins', async () => {

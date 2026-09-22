@@ -103,7 +103,7 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, model
 
   const at = now.toISOString()
   if (cmd.name === 'model') return setModel(cmd.arg, { state, who, models, defaults, at, by: req.author })
-  if (cmd.name === 'deploy') return startDeploy({ state, who, deploy, req, at })
+  if (cmd.name === 'deploy') return startDeploy({ state, who, by: req.author, reply: { repo: req.repo, number: req.number, kind: req.kind, commentId: req.commentId }, deploy, at })
   const grants = (state.grants ??= {})
   const here = grants[repoKey(req.repo)] ?? {}
   if (cmd.name === 'pause') {
@@ -134,11 +134,35 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, model
 }
 
 /**
+ * A command asked in Slack (`@bot /model …`), answered by the controller as on GitHub, with the
+ * same state: one `/pause` stops PR writing on both. Its admins are the workspace's owners and
+ * admins (policy.mjs isSlackAdmin); the commands that say who may ask for PRs in a GitHub repo
+ * stay on GitHub — in Slack, every member may. `reply` is where a `/deploy` reports back.
+ */
+export async function runSlackCommand(cmd, { state, isAdmin, who, by, reply, models, deploy, defaults, help, now = new Date() }) {
+  if (cmd.unknown) return `I don't know \`/${cmd.unknown}\`.\n\n${await help()}`
+  if (cmd.name === 'help') return help()
+  if (!isAdmin) return `${who} only this workspace's admins can use \`/${cmd.name}\`.`
+  const at = now.toISOString()
+  if (cmd.name === 'model') return setModel(cmd.arg, { state, who, models, defaults, at, by })
+  if (cmd.name === 'deploy') return startDeploy({ state, who, by, reply, deploy, at })
+  if (cmd.name === 'pause') {
+    state.paused = { by, at }
+    return `${who} ⏸️ PR writing is paused everywhere, on GitHub and here. \`/resume\` turns it back on.`
+  }
+  if (cmd.name === 'resume') {
+    state.paused = null
+    return `${who} ▶️ PR writing is back on.`
+  }
+  return `${who} \`/${cmd.name}\` is a GitHub command: it says who may ask me for PRs in a GitHub repo. Here, every member may.`
+}
+
+/**
  * `/deploy` puts live what humans merged on the tracked branch since the running build — never a
  * PR branch, never rewritten history. It only records the deploy (state.deploy); the controller
  * restarts once the reply is posted, and the next build reports back (deploy.mjs: deployOutcome).
  */
-async function startDeploy({ state, who, deploy, req, at }) {
+async function startDeploy({ state, who, by, reply, deploy, at }) {
   // One on its way live blocks another; one already live, on its trial, is followed by this one.
   if (state.deploy && !state.deploy.live) return `${who} a deploy to \`${short(state.deploy.to)}\` is already under way.`
   let plan
@@ -149,7 +173,7 @@ async function startDeploy({ state, who, deploy, req, at }) {
   }
   if (plan.status === 'identical' || !plan.commits.length) return `${who} I'm already running \`${short(plan.from)}\` — there's nothing new on main.`
   if (plan.status !== 'ahead') return `${who} main isn't ahead of the build I'm running (it's ${plan.status}), so I won't deploy it — someone rewrote its history. Deploy by hand.`
-  state.deploy = { from: plan.from, to: plan.to, by: req.author, at, reply: { repo: req.repo, number: req.number, kind: req.kind, commentId: req.commentId } }
+  state.deploy = { from: plan.from, to: plan.to, by, at, reply } // reply: a GitHub thread, or { slack: { channel, threadTs } }
   const n = plan.commits.length
   const list = plan.commits.slice(-10).map((c) => `- \`${short(c.sha)}\` ${c.title}`).join('\n')
   return `${who} 🚀 deploying \`${short(plan.from)}\` → \`${short(plan.to)}\`, ${n} commit${n === 1 ? '' : 's'}:\n\n${n > 10 ? '- …\n' : ''}${list}\n\nRunning turns finish first; I'll say here when it's live.`

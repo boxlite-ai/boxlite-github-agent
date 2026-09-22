@@ -17,7 +17,10 @@
 // A write turn (PUSH_REF set) starts from the commit the controller chose (BASE_SHA, fetched
 // anonymously from BASE_URL) on a local `botlite` branch; whatever Codex commits is pushed after
 // it exits, with the same job token, to the controller (PUSH_URL), which lets exactly PUSH_REF
-// through. Nothing here is a check — Codex could rewrite this runner — the controller checks.
+// through. A Slack turn has no repo to start from: Codex clones what it needs, and to propose a
+// change leaves pr.json ({ repo, dir }) in the working directory; after it exits, this asks the
+// controller for the push (PR_URL) and pushes that clone's commits to the ref it's given.
+// Nothing here is a check — Codex could rewrite this runner — the controller checks.
 import { spawn, execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -212,6 +215,51 @@ function pushCommits() {
   }
 }
 
+/**
+ * A Slack turn's PR, if Codex asked for one (pr.json in the working directory): the clone's commits
+ * on top of its default branch go to the ref the controller grants, or the report says why not.
+ */
+async function slackPr() {
+  const file = path.join(WORK, 'pr.json')
+  if (!existsSync(file)) return null
+  const want = (() => {
+    try {
+      return JSON.parse(readFileSync(file, 'utf8'))
+    } catch {
+      return null
+    }
+  })()
+  rmSync(file, { force: true }) // one ask, one PR: a later turn doesn't ask again
+  try {
+    if (!want?.repo) throw new Error('pr.json needs "repo" (owner/name) and "dir" (the clone)')
+    const dir = path.resolve(WORK, String(want.dir ?? '.'))
+    if (dir !== WORK && !dir.startsWith(WORK + path.sep)) throw new Error('pr.json: "dir" must be inside the working directory')
+    const g = (...args) => sh('git', args, { cwd: dir }).toString().trim()
+    g('fetch', '--quiet', 'origin')
+    const upstream = (() => {
+      try {
+        return g('symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
+      } catch {
+        return 'origin/main'
+      }
+    })()
+    const base = g('merge-base', 'HEAD', upstream)
+    const head = g('rev-parse', 'HEAD')
+    const uncommitted = g('status', '--porcelain', '--untracked-files=no') !== ''
+    if (head === base) return { pushed: null, uncommitted, error: `no commits on top of ${upstream}` }
+    const res = await fetch(E.PR_URL, { method: 'POST', headers: { authorization: `Bearer ${E.BOTLITE_JOB_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ repo: String(want.repo), base }) })
+    const answer = await res.json().catch(() => ({}))
+    if (!res.ok) return { pushed: null, uncommitted, refused: String(answer.error ?? `the controller said ${res.status}`).slice(0, 300) }
+    sh('git', ['push', '--quiet', '--force', '--no-verify', E.PUSH_URL, `HEAD:${answer.ref}`], {
+      cwd: dir,
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Bearer ${E.BOTLITE_JOB_TOKEN}` },
+    })
+    return { pushed: head, uncommitted }
+  } catch (e) {
+    return { pushed: null, error: String(e.stderr || e.message).trim().slice(-2000) } // the controller picks the reason out
+  }
+}
+
 function codex(args, prompt) {
   return new Promise((resolve) => {
     const child = spawn('codex', args, {
@@ -283,6 +331,7 @@ async function main() {
       /* the turn produced no final message */
     }
     if (E.PUSH_REF) result.push = pushCommits()
+    else if (E.PR_URL) result.push = await slackPr()
   } catch (e) {
     Object.assign(result, { code: 1, setupError: String(e.stderr || e.message || e).slice(-800) })
   }

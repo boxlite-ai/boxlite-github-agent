@@ -9,6 +9,7 @@ import { createDecipheriv, randomBytes } from 'node:crypto'
 import { CODEX_VERSION, codexConfig } from '../src/codex.mjs'
 import { jobTokens } from '../src/chatgpt.mjs'
 import { gitPushHandler } from '../src/gitpush.mjs'
+import { prGrantHandler } from '../src/prgrant.mjs'
 import { gitServer } from './gitserver.mjs'
 
 // The real in-box runner (box/session.mjs) as a process: a fake `codex` on PATH, a pre-made
@@ -40,6 +41,7 @@ echo "turn: $prompt" >> "$CODEX_HOME/sessions/rollout.jsonl"
 grep -o '"access_token":"[^"]*"' "$CODEX_HOME/auth.json" >> "$CODEX_HOME/sessions/rollout.jsonl"
 echo "api-key-env: \${OPENAI_API_KEY:-none}" >> "$CODEX_HOME/sessions/rollout.jsonl"
 case "$prompt" in *COMMIT*) printf 'fixed\\n' > fix.txt && git add fix.txt && git commit -qm "Fix the thing" ;; esac
+case "$prompt" in *SLACKPR*) src=$(printf '%s' "$prompt" | sed -n 's/.*SLACKPR \\([^ ]*\\).*/\\1/p'); git clone -q "$src" app && (cd app && printf 'added\\n' > f.txt && git add f.txt && git commit -qm "Add f") && printf '{"repo":"acme/app","dir":"app"}' > pr.json ;; esac
 case "$prompt" in *FAIL*) echo '{"type":"turn.failed","error":{"message":"boom"}}'; exit 1 ;; esac
 echo '{"type":"thread.started","thread_id":"th-1"}'
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}'
@@ -268,6 +270,89 @@ test('runner: a write turn starts on the base commit and pushes what Codex commi
     jobs.revoke(readOnly)
   } finally {
     proxy.close()
+    github.close()
+  }
+})
+
+// A Slack turn's PR end to end: the fake Codex clones the repo in its working directory, commits
+// and leaves pr.json; the runner asks the controller's /pr for the push and pushes that clone's
+// commits to the one ref it's given — through the same git route, onto a fake github.com's fork.
+async function slackTurn(ctx, prompt, token, env = {}) {
+  const child = spawn(process.execPath, [RUNNER], {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`, CTX: ctx, CONTEXT_KEY: KEY, REPO: '', CODEX_VERSION,
+      SNAPSHOT: path.join(root, 'vol-slack', 'T01', 'C01', `${path.basename(ctx)}.1`, 'context.sealed'),
+      BOTLITE_ARGS: JSON.stringify(['exec', '--json', '-o', path.join(ctx, 'last-message.md'), '-']),
+      BOTLITE_JOB_TOKEN: token, ...env,
+    },
+  })
+  let stdout = ''
+  child.stdout.on('data', (d) => (stdout += d))
+  child.stdin.end(JSON.stringify({ prompt, files: [] }))
+  await new Promise((r) => child.on('close', r))
+  return JSON.parse(stdout.trim().split('\n').at(-1))
+}
+
+test('runner: a Slack turn’s PR — the clone’s commits go to the ref the controller grants, and nowhere else', async () => {
+  const seed = path.join(root, 'seed-slack')
+  git('init', '-q', '-b', 'main', seed)
+  writeFileSync(path.join(seed, 'README'), 'app\n')
+  git('-C', seed, 'add', 'README')
+  git('-C', seed, '-c', 'user.name=u', '-c', 'user.email=u@u', 'commit', '-qm', 'init')
+  const upstream = path.join(root, 'upstream-slack.git')
+  git('clone', '-q', '--bare', seed, upstream)
+  const main = git('-C', seed, 'rev-parse', 'HEAD')
+  const fork = path.join(root, 'github', 'botlite', 'app-slack.git')
+  mkdirSync(path.dirname(fork), { recursive: true })
+  git('init', '-q', '--bare', fork)
+  const STAGE = 'refs/heads/botlite-staging/slack-0123456789ab'
+
+  const SECRET = Buffer.from('job-secret')
+  const jobs = jobTokens(SECRET)
+  const github = await gitServer(path.join(root, 'github'))
+  const git_ = gitPushHandler({ secret: SECRET, jobs, upstream: github.url })
+  const prs = prGrantHandler({ secret: SECRET, jobs })
+  const controller = http.createServer((req, res) => (req.url === '/pr' ? prs(req, res) : git_(req, res)))
+  await new Promise((r) => controller.listen(0, '127.0.0.1', r))
+  const at = `http://127.0.0.1:${controller.address().port}`
+  const env = { PR_URL: `${at}/pr`, PUSH_URL: `${at}/git` }
+  const slackJob = (allowed) => {
+    const job = { who: 'Alice (U1)' }
+    job.pr = {
+      grant: async (want) => {
+        job.asked = want
+        if (want.repo !== allowed) throw new Error(`I may open PRs only in ${allowed}`)
+        job.push = { ref: STAGE, open: async () => ({ repo: 'botlite/app-slack', token: 'ghs_turn' }) }
+        return { ref: STAGE }
+      },
+    }
+    return job
+  }
+  try {
+    const job = slackJob('acme/app')
+    const token = jobs.issue(60_000, 'T01/C01/1.1', job)
+    const ctx = path.join(root, 'box-slack-pr')
+    const result = await slackTurn(ctx, `SLACKPR ${upstream}`, token, env)
+    assert.equal(result.code, 0)
+    assert.deepEqual(job.asked, { repo: 'acme/app', base: main }) // built on the default branch's tip
+    assert.match(result.push.pushed, /^[0-9a-f]{40}$/)
+    assert.equal(git('--git-dir', fork, 'rev-parse', STAGE), result.push.pushed) // landed on the one granted ref
+    assert.equal(git('--git-dir', fork, 'rev-parse', `${STAGE}^`), main)
+    assert.equal(git('--git-dir', fork, 'show', `${STAGE}:f.txt`), 'added')
+    assert.equal(existsSync(path.join(ctx, 'work', 'pr.json')), false) // asked once: the next turn doesn't ask again
+    jobs.revoke(token)
+
+    const elsewhere = slackJob('boxlite-ai/app') // the controller's rules say no
+    const no = jobs.issue(60_000, 'T01/C01/2.2', elsewhere)
+    const refused = await slackTurn(path.join(root, 'box-slack-no'), `SLACKPR ${upstream}`, no, env)
+    assert.deepEqual({ pushed: refused.push.pushed, refused: refused.push.refused }, { pushed: null, refused: 'I may open PRs only in boxlite-ai/app' })
+    jobs.revoke(no)
+
+    const quiet = jobs.issue(60_000, 'T01/C01/3.3', slackJob('acme/app'))
+    assert.equal((await slackTurn(path.join(root, 'box-slack-q'), 'just a question', quiet, env)).push, null) // no pr.json, no PR
+    jobs.revoke(quiet)
+  } finally {
+    controller.close()
     github.close()
   }
 })

@@ -47,15 +47,16 @@ import { newSessionPrompt, followUpPrompt, CODEX_VERSION } from './codex.mjs'
 import { chatgptLogin, jobTokens, deviceLogin, codexModels } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
 import { gitPushHandler } from './gitpush.mjs'
+import { prGrantHandler } from './prgrant.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
-import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
-import { planWrite, publishWrite } from './publish.mjs'
+import { parseCommand, runCommand, runSlackCommand, writeAccess, modelOf } from './access.mjs'
+import { planWrite, planSlackWrite, publishWrite } from './publish.mjs'
 import { selfBuild, deployPlan, markGood, goodBuild, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS, TRIAL_TURN, trialTurnFailure } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 import { toolBroker, enabledServices } from './tools.mjs'
 import { keyLogin, oauthLogin } from './oauth.mjs'
-import { TOOLS } from './policy.mjs'
+import { TOOLS, SLACK_PR_REPOS } from './policy.mjs'
 import { tally } from './slack-reply.mjs'
 import { slackChannel } from './slack-channel.mjs'
 
@@ -161,6 +162,7 @@ const webhook = webhookHandler({
   },
 })
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
+const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn asking for its PR's push
 // The bot's own logins to the team's tools, each optional: a service is on while its login is in place.
 const logins = {
   linear: keyLogin(async () => first('LINEAR_API_KEY', 'BOXLITE_SECRET_LINEAR') || (await readSecretFile('linear-api-key'))),
@@ -188,7 +190,7 @@ const health = () => {
   const deaf = Date.now() - lastSlack
   return deaf < 10 * 60_000 ? { ok: true } : { ok: false, why: `not connected to Slack for ${Math.floor(deaf / 60_000)} minutes` }
 }
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, tools, health })
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, pr: prGrant, tools, health })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -391,17 +393,48 @@ async function handle(req) {
 }
 
 /** A command (access.mjs): answered by the controller itself — no box, no model. */
+const models = () => codexModels({ login: chatgpt, clientVersion: CODEX_VERSION })
+const deploy = () => (build.commit && build.repo ? deployPlan({ gh, build }) : Promise.reject(new Error("this controller doesn't run from a git checkout")))
+
 async function command(req, cmd) {
   const access = writeAccess({ state, admins, req, ready: Boolean(await loadPushApp()) })
   const left = admins.has(req.userId) ? null : quotaLeft(state, req.author, cfg.dailyLimit)
-  const models = () => codexModels({ login: chatgpt, clientVersion: CODEX_VERSION })
-  const deploy = () => (build.commit && build.repo ? deployPlan({ gh, build }) : Promise.reject(new Error("this controller doesn't run from a git checkout")))
   const before = state.deploy
   const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, models, deploy, defaults: { model: cfg.model, effort: cfg.effort }, access, left, limit: cfg.dailyLimit })
   await persist()
   await comment(req, text, { footer: false })
   // Only a deploy this /deploy recorded: not one it refused, nor the last one, still on its trial.
   if (state.deploy && state.deploy !== before && !restarting) restart()
+}
+
+/**
+ * Slack does all GitHub does (slack-channel.mjs). Its commands run on the same state — one
+ * `/pause` stops PR writing on both — and its PRs go through the same publishing: planned when
+ * the box asks (prgrant.mjs), checked and opened after the turn (publish.mjs).
+ */
+const slackCommands = {
+  async run(cmd, { isAdmin, who, by, reply, help, post }) {
+    const before = state.deploy
+    const text = await runSlackCommand(cmd, { state, isAdmin, who, by, reply, models, deploy, defaults: { model: cfg.model, effort: cfg.effort }, help })
+    await persist()
+    await post(text)
+    if (state.deploy && state.deploy !== before && !restarting) restart()
+  },
+}
+const slackPrs = {
+  async status() {
+    if (!(await loadPushApp())) return { ok: false, why: "PR writing isn't set up on this bot", repos: SLACK_PR_REPOS }
+    if (state.paused) return { ok: false, why: `an admin (@${state.paused.by}) paused PR writing`, repos: SLACK_PR_REPOS }
+    return { ok: true, repos: SLACK_PR_REPOS }
+  },
+  plan: ({ repo, base, id }) => planSlackWrite({ gh, app: pushApp, me, repo, base, id, knownFork: state.forks[repo.toLowerCase()], log }),
+  async publish(plan, result) {
+    const refuse = state.paused ? 'an admin paused PR writing while I worked' : null
+    const note = await publishWrite({ gh, app: pushApp, me, plan, req: { repo: plan.target.repo, origin: 'Requested from Slack' }, result, refuse, selfRepo: build.repo, log })
+    if (plan.fork) state.forks[plan.target.repo.toLowerCase()] = plan.fork
+    persist()
+    return note
+  },
 }
 
 /**
@@ -546,7 +579,7 @@ async function connectSlack() {
     await rename(handed, path.join(stateDir, 'slack-state.imported.json'))
     log(`slack: took in the Slack agent's memory: ${Object.keys(state.slack.threads).length} threads, ${state.slack.deferred.length} requests kept for us`)
   }
-  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, logins, policy: TOOLS, turnCfg, status, log })
+  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, logins, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
   if (draining) return true // shutting down meanwhile: the next controller connects
   slackBot = channel
   lastSlack = Date.now() // the trial and /healthz count Slack from its start
@@ -573,7 +606,11 @@ const deploying = state.deploy
 const outcome = deployOutcome({ pending: deploying, running: build.commit, rollback })
 if (outcome) {
   log(`deploy: ${outcome}`)
-  await comment(deploying.reply, outcome, { footer: false }).catch((e) => log(`deploy: couldn't report back: ${e.message}`))
+  // Back where it was asked: a GitHub thread, or a Slack one (slack-channel.mjs).
+  const said = deploying.reply?.slack
+    ? slackBot?.post(deploying.reply.slack, outcome) ?? Promise.reject(new Error('Slack is off'))
+    : comment(deploying.reply, outcome, { footer: false })
+  await said.catch((e) => log(`deploy: couldn't report back: ${e.message}`))
 }
 if (deploying) {
   state.deploy = pendingAfter({ pending: deploying, running: build.commit, rollback })

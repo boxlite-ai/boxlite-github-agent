@@ -111,10 +111,11 @@ export async function ensureBox(bl, name, cfg) {
  * checkout, and its request's `files` ([{ path, data (base64) }]) travel with the prompt on the
  * exec's stdin, so no other box — and nothing on the volume — ever holds them. `tools` are the
  * team's tool services the turn may use (tools.mjs enabledServices); `label` a Slack thread's words
- * for its box name (boxName).
+ * for its box name (boxName); `prs` lets a Slack turn ask for a PR's push once its work is done
+ * (box/session.mjs, prgrant.mjs).
  * @returns {{ sessionId, message, error, sessionLost, push }}.
  */
-export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, log = () => {} }) {
+export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, prs = false, log = () => {} }) {
   const side = sideOf(key, cfg, { slack })
   const name = boxName(key, { slack, label })
   const boxCfg = { ...cfg, volume: side.volume } // its own side's volume, and only that one
@@ -132,6 +133,7 @@ export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = []
       CODEX_CONFIG: JSON.stringify(codexConfig(proxyUrl)),
       BOTLITE_JOB_TOKEN: jobToken,
       ...(write ? { BASE_SHA: write.base, BASE_URL: write.baseUrl, PUSH_URL: `${proxyUrl}/git`, PUSH_REF: `refs/heads/${write.staging}` } : {}),
+      ...(slack && prs ? { PR_URL: `${proxyUrl}/pr`, PUSH_URL: `${proxyUrl}/git` } : {}),
     },
     timeout_seconds: Math.ceil(cfg.jobTimeoutMs / 1000),
   }
