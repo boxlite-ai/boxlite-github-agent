@@ -67,6 +67,7 @@ next mention restores into a new one.
 | `@boxliteai /list` | admins | who has been added here |
 | `@boxliteai /pause` · `/resume` | admins | stop or restart all PR writing |
 | `@boxliteai /model [model] [effort]` | admins | show, or set, the model and reasoning effort every turn runs on, e.g. `/model gpt-6-astra xhigh`; `/model default` undoes it |
+| `@boxliteai /deploy` | admins | put what's merged on `main` live (see below) |
 
 `/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
 pinned Codex, since a bad one would fail every turn.
@@ -74,6 +75,22 @@ pinned Codex, since a bad one would fail every turn.
 The controller answers these itself; Codex never sees them. Admin commands count only in a new,
 never-edited comment, because anyone with write access to a repo can edit other people's comments
 there. People are kept by GitHub id, since a login can change hands.
+
+### Improving itself
+
+The bot can open PRs on its own repo like any other, and `/deploy` puts them live once merged.
+
+- **A human always merges.** The bot has read access to its own repo, so it can't merge or push
+  there. Its PRs are drafts from its fork, and a PR that touches its trust boundary (who may
+  publish, what gets checked and pushed, credentials, the runner, deploy) opens with a warning.
+- **`/deploy` only deploys what's merged.** It shows the commits on `main` since the running
+  build, lets running turns finish, and restarts onto `main`, as `ctl restart` does. It refuses
+  if `main`'s history was rewritten. The next build reports back in the same thread.
+- **A build that won't start is rolled back.** The launcher (`src/main.mjs`) marks a build good
+  once it's live. If a new build fails to go live three times in a row, the launcher rolls back to
+  the last good one and says so in the thread.
+- **Nothing new reaches the session box.** Deploying needs no credential, because the controller
+  restarts itself.
 
 ## Who holds what
 
@@ -95,7 +112,9 @@ fenced as untrusted context, never as instructions.
 
 | File | Runs in | Does |
 |---|---|---|
-| `src/main.mjs` | controller | wiring: credentials, poll loop, quotas, replies, drain on restart |
+| `src/main.mjs` | controller | the launcher: rolls back a build that won't go live, then starts the controller |
+| `src/controller.mjs` | controller | wiring: credentials, poll loop, quotas, replies, drain on restart |
+| `src/deploy.mjs` | controller | `/deploy`: what's merged since the running build, and how the deploy went |
 | `src/mentions.mjs` · `webhook.mjs` | controller | mentions from polled notifications or App pushes |
 | `src/jobs.mjs` · `state.mjs` | controller | one turn per thread, a few at once; seen comments, sessions, quotas |
 | `src/session.mjs` | controller | one turn: start or create the box, exec the runner attached, stop it |

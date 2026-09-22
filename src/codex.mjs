@@ -79,7 +79,7 @@ function publishing(login, req, write) {
   if (!write?.allowed) {
     return `You can't publish changes for this request (@${req.author}: ${write?.why ?? 'not allowed'}). If it asks for a PR, say so and give the change as a diff instead.`
   }
-  return `This request may publish changes. The checkout is on a local branch, \`botlite\`, at the commit a change builds on (${write.base.slice(0, 7)}). If the request asks for a change to the code, make it and commit it there with \`git commit\`: the message's first line becomes the title, the rest the description. Don't push — after you finish, your commits are checked and published ${write.describe}, as one commit by @${login}. Only committed changes count, and changes to workflows, actions, CODEOWNERS, submodules, symlinks or funding links are refused. The link is added under your reply, so don't invent one. If the request only asks a question, just answer it.`
+  return `This request may publish changes. The checkout is on a local branch, \`botlite\`, at the commit a change builds on (${write.base.slice(0, 7)}). If the request asks for a change to the code, make it and commit it there with \`git commit\`: the message's first line becomes the title, the rest the description. Don't push — after you finish, your commits are checked and published ${write.describe}, as one new commit by @${login}, so don't quote your own commits' hashes. Only committed changes count, and changes to workflows, actions, CODEOWNERS, submodules, symlinks or funding links are refused. The link is added under your reply, so don't invent one. If the request only asks a question, just answer it.`
 }
 
 /** First turn of a thread's session: who we are, the sandbox, the thread, then the request. */

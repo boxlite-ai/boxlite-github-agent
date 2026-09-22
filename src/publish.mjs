@@ -8,6 +8,8 @@
 //
 // Everything that came out of the box is untrusted — Codex has sudo in there and can rewrite the
 // runner — so every rule lives here, and the controller never parses git data the box made.
+import { sensitiveFiles } from './deploy.mjs'
+
 export const LIMITS = { files: 100, lines: 5000, commits: 50, blobBytes: 1024 * 1024, treeCalls: 60 }
 
 // Never written by the bot, whoever asks: CI definitions (they run with the repo's secrets once
@@ -161,12 +163,14 @@ export function describeChange(commits, req) {
   return { title, body, message }
 }
 
-function prBody({ body, req, flagged }) {
+function prBody({ body, req, flagged, sensitive }) {
+  const list = (files) => files.map((f) => `\`${f}\``).join(', ')
   return [
+    ...(sensitive.length ? [`> [!WARNING]\n> This changes the bot's own trust boundary — ${list(sensitive)}. Review it closely: once merged, an admin's \`/deploy\` puts it live.`] : []),
     body || '_No description._',
     '---',
     `Requested by @${req.author} in ${req.url}. Written by an AI agent (Codex, in an isolated [BoxLite](https://boxlite.ai) microVM) — please review it like any outside contribution.`,
-    ...(flagged.length ? [`**Dependencies changed:** ${flagged.map((f) => `\`${f}\``).join(', ')} — check these closely.`] : []),
+    ...(flagged.length ? [`**Dependencies changed:** ${list(flagged)} — check these closely.`] : []),
   ].join('\n\n')
 }
 
@@ -174,9 +178,10 @@ function prBody({ body, req, flagged }) {
  * After the turn — its job token already revoked, so nothing can move the staging branch any
  * more. `result` is the runner's own report ({ pushed, uncommitted, error }), a hint only: the
  * staging ref on GitHub is what counts. `refuse` (a reason) cleans up without publishing.
+ * `selfRepo` is the bot's own repo: a PR there that touches its trust boundary says so.
  * @returns a line for the reply, or null when there's nothing to say.
  */
-export async function publishWrite({ gh, app, me, plan, req, result, refuse = null, log = () => {} }) {
+export async function publishWrite({ gh, app, me, plan, req, result, refuse = null, selfRepo = null, log = () => {} }) {
   if (!plan.opened) return result?.uncommitted ? '⚠️ Nothing was published: the changes were left uncommitted.' : null
   try {
     await plan.opened
@@ -207,12 +212,15 @@ export async function publishWrite({ gh, app, me, plan, req, result, refuse = nu
       throw e
     }
     const short = commit.sha.slice(0, 7)
-    if (!plan.target) return `📬 Pushed ${short} to this PR.`
-    if (plan.existing) return `📬 Pushed ${short} to draft PR ${plan.existing.html_url}.`
+    const own = selfRepo && (plan.target?.repo ?? req.repo).toLowerCase() === selfRepo.toLowerCase()
+    const sensitive = own ? sensitiveFiles([...new Set((compare.files ?? []).flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)))]) : []
+    const careful = sensitive.length ? ` It changes my own trust boundary (${sensitive.map((f) => `\`${f}\``).join(', ')}) — review it closely.` : ''
+    if (!plan.target) return `📬 Pushed ${short} to this PR.${careful}`
+    if (plan.existing) return `📬 Pushed ${short} to draft PR ${plan.existing.html_url}.${careful}`
     const pull = await gh.json('POST', `/repos/${plan.target.repo}/pulls`, {
-      body: { title, head: `${me.login}:${plan.branch}`, base: plan.target.base, body: prBody({ body, req, flagged: verdict.flagged }), draft: true, maintainer_can_modify: true },
+      body: { title, head: `${me.login}:${plan.branch}`, base: plan.target.base, body: prBody({ body, req, flagged: verdict.flagged, sensitive }), draft: true, maintainer_can_modify: true },
     })
-    return `📬 Opened draft PR ${pull.html_url}.`
+    return `📬 Opened draft PR ${pull.html_url}.${careful}`
   } finally {
     await gh.request('DELETE', `/repos/${fork}/git/refs/heads/${plan.staging}`).catch(() => {})
   }

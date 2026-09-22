@@ -1,0 +1,62 @@
+// The bot deploying itself, controller side. What goes live is only ever what a human merged on
+// the tracked branch (BOTLITE_REF, main): the bot can't merge — it has read access to its own
+// repo — and `/deploy` (admins only, access.mjs) just restarts the controller onto that branch, as
+// `ctl restart` does. The launcher (main.mjs) rolls back a build that won't go live; this module
+// reads what happened when the next build comes up, and says so in the thread that asked.
+import { execFileSync } from 'node:child_process'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+
+const short = (sha) => String(sha ?? '').slice(0, 7)
+
+/** The build this controller runs: its commit, its repo (owner/name from origin) and branch. */
+export function selfBuild(dir, ref = 'main') {
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  try {
+    const url = git('remote', 'get-url', 'origin')
+    return { dir, ref, commit: git('rev-parse', 'HEAD'), repo: /github\.com[:/]([\w.-]+\/[\w.-]+?)(\.git)?$/.exec(url)?.[1] ?? null }
+  } catch {
+    return { dir, ref, commit: null, repo: null }
+  }
+}
+
+/**
+ * What `/deploy` would put live: the commits on the tracked branch since the running build.
+ * @returns {{ from, to, status, commits: { sha, title }[] }} status as GitHub's compare says
+ */
+export async function deployPlan({ gh, build }) {
+  const cmp = await gh.json('GET', `/repos/${build.repo}/compare/${build.commit}...${build.ref}`)
+  const commits = (cmp.commits ?? []).map((c) => ({ sha: c.sha, title: c.commit.message.split('\n')[0] }))
+  return { from: build.commit, to: commits.at(-1)?.sha ?? build.commit, status: cmp.status, commits }
+}
+
+/** The launcher's verdicts, kept in the state dir: a build is good once it's live. */
+export function markGood(stateDir, commit) {
+  writeFileSync(path.join(stateDir, 'good-build.json'), JSON.stringify({ commit, at: new Date().toISOString() }))
+  rmSync(path.join(stateDir, 'boot.json'), { force: true })
+}
+/** A rollback the launcher did before this start ({ from, to, at }), read once. */
+export function takeRollback(stateDir) {
+  const file = path.join(stateDir, 'rollback.json')
+  try {
+    const r = JSON.parse(readFileSync(file, 'utf8'))
+    rmSync(file, { force: true })
+    return r
+  } catch {
+    return null
+  }
+}
+
+/** How a `/deploy` turned out, for the thread that asked; null when none was pending. */
+export function deployOutcome({ pending, running, rollback }) {
+  if (!pending) return null
+  const who = `@${pending.by}`
+  if (rollback) return `${who} ⚠️ \`${short(rollback.from)}\` didn't come up — it failed to start three times, so I rolled back to \`${short(rollback.to)}\`. Fix it on \`main\` and \`/deploy\` again.`
+  if (running === pending.to) return `${who} ✅ \`${short(pending.to)}\` is live.`
+  return `${who} ⚠️ that deploy didn't take: I'm running \`${short(running)}\`, not \`${short(pending.to)}\`.`
+}
+
+// The bot's own trust boundary: who may publish, what gets checked and pushed, the credentials,
+// the runner and the deploy. A PR on the bot's own repo that touches these says so at the top.
+const SENSITIVE = [/^src\/(access|publish|gitpush|githubapp|proxy|chatgpt|main|controller|deploy|mentions|webhook|session|state|github|reply)\.mjs$/, /^box\//, /^deploy\//]
+export const sensitiveFiles = (paths) => paths.filter((p) => SENSITIVE.some((re) => re.test(p)))

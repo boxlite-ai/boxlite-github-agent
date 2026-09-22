@@ -100,7 +100,7 @@ test('prompts: every turn says whether it may publish — a follow-up can come f
   for (const p of [newSessionPrompt({ login: 'botlite', req, pr, write }), followUpPrompt({ login: 'botlite', req, pr, headMoved: true, write })]) {
     assert.match(p, /This request may publish changes\. The checkout is on a local branch, `botlite`, at the commit a change builds on \(feedbea\)/)
     assert.match(p, /commit it there with `git commit`/)
-    assert.match(p, /Don't push — after you finish, your commits are checked and published as a new draft PR into main, as one commit by @botlite\./)
+    assert.match(p, /Don't push — after you finish, your commits are checked and published as a new draft PR into main, as one new commit by @botlite, so don't quote your own commits' hashes\./)
     assert.match(p, /workflows, actions, CODEOWNERS, submodules, symlinks or funding links are refused/)
     assert.doesNotMatch(p, /the checkout now points at/) // on a write turn the checkout is the base, not the PR head
   }
