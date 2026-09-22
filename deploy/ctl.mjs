@@ -40,11 +40,16 @@ if (!box) {
 const id = box.id || box.name
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-async function sh(script, stdin) {
+async function sh(script, stdin, lost) {
   const { execution_id: execId } = await bl.startExec(id, { command: 'bash', args: ['-c', script], timeout_seconds: 60 })
   let out = ''
-  const code = await bl.attach(id, execId, { stdin, onStdout: (b) => (out += b), onStderr: (b) => (out += b), timeoutMs: 90_000 })
-  return { code, out: out.trimEnd() }
+  try {
+    const code = await bl.attach(id, execId, { stdin, onStdout: (b) => (out += b), onStderr: (b) => (out += b), timeoutMs: 90_000 })
+    return { code, out: out.trimEnd() }
+  } catch (e) {
+    if (!lost) throw e
+    return lost(e) // it started; only its result is gone
+  }
 }
 // An attach sometimes drops after it opened, while the command runs on (seen live). A read is
 // retried, since reading twice is harmless; a command that changes something runs once.
@@ -58,16 +63,9 @@ async function read(script) {
     }
   }
 }
-// ...and when its result is lost, --wait lets the next start settle it; without --wait, it fails.
-async function act(script, stdin) {
-  try {
-    return await sh(script, stdin)
-  } catch (e) {
-    if (!wait) throw e
-    console.log(`couldn't read the result (${e.message}); waiting for the next start anyway`)
-    return null
-  }
-}
+// ...and when the result of one that started is lost, --wait lets the next start settle it; without
+// --wait, it fails. One that never started fails either way.
+const act = (script, stdin) => sh(script, stdin, wait && ((e) => (console.log(`couldn't read the result (${e.message}); waiting for the next start anyway`), null)))
 // A hand-over that failed exits non-zero, so the workflow step that ran it fails too.
 function report(r, ok) {
   console.log(r.code === 0 ? ok : `failed: ${r.out}`)

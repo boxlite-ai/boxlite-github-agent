@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 const TRIES = 3
-const HANG_MS = Number(process.env.HANG_MIN || 10) * 60_000
+const hangMin = Number(process.env.HANG_MIN)
+const HANG_MS = (Number.isFinite(hangMin) && hangMin > 0 ? hangMin : 10) * 60_000 // a bad value would kill every start
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const stateDir = path.dirname(process.env.STATE_FILE || '/var/lib/botlite/state.json')
 const file = (name) => path.join(stateDir, name)
