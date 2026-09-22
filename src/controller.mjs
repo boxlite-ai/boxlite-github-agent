@@ -325,10 +325,12 @@ async function command(req, cmd) {
   const left = admins.has(req.userId) ? null : quotaLeft(state, req.author, cfg.dailyLimit)
   const models = () => codexModels({ login: chatgpt, clientVersion: CODEX_VERSION })
   const deploy = () => (build.commit && build.repo ? deployPlan({ gh, build }) : Promise.reject(new Error("this controller doesn't run from a git checkout")))
+  const before = state.deploy
   const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, models, deploy, defaults: { model: cfg.model, effort: cfg.effort }, access, left, limit: cfg.dailyLimit })
   await persist()
   await reply(gh, req, text, { footer: false })
-  if (cmd.name === 'deploy' && state.deploy && !restarting) restart()
+  // Only a deploy this /deploy recorded: not one it refused, nor the last one, still on its trial.
+  if (state.deploy && state.deploy !== before && !restarting) restart()
 }
 
 /**

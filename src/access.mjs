@@ -139,7 +139,8 @@ export async function runCommand(cmd, { state, admins, req, login, lookup, model
  * restarts once the reply is posted, and the next build reports back (deploy.mjs: deployOutcome).
  */
 async function startDeploy({ state, who, deploy, req, at }) {
-  if (state.deploy) return `${who} a deploy to \`${short(state.deploy.to)}\` is already under way.`
+  // One on its way live blocks another; one already live, on its trial, is followed by this one.
+  if (state.deploy && !state.deploy.live) return `${who} a deploy to \`${short(state.deploy.to)}\` is already under way.`
   let plan
   try {
     plan = await deploy()
