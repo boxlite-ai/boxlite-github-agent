@@ -3,6 +3,7 @@
 // asks for, then read each thread's new comments ourselves and keep the ones addressed to us.
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const MAX_SWEEP_TRIES = 30 // a second look that keeps failing gives up after this many polls (about half an hour)
 
 /** Does `body` address @login? Quoted lines and code are ignored, so quoting an old request never re-runs it. */
 export function mentions(body, login) {
@@ -133,8 +134,12 @@ export async function readThreads(gh, { notifications, sweeps, login, seen, acce
       for (const req of await requestsFrom(gh, n, { login, seen })) accept(req)
       delete sweeps[key]
     } catch (e) {
-      if (e.status === 404 || e.status === 410) delete sweeps[key] // gone, or not ours to read
-      log(`second look at ${key}: ${e.message}`)
+      // Gone, not ours to read, or refused outright: that won't change. A rate limit (a 429, or a
+      // 403 that says so), GitHub's 5xx or the network will — so next time, for a while.
+      const refused = e.status >= 400 && e.status < 500 && e.status !== 429 && !/rate limit/i.test(e.message)
+      s.tries = (s.tries ?? 0) + 1
+      if (refused || s.tries >= MAX_SWEEP_TRIES) delete sweeps[key]
+      log(`second look at ${key}: ${e.message}${sweeps[key] ? '' : ' — dropped'}`)
     }
   }
   return clean

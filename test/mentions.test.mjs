@@ -115,10 +115,10 @@ test('requestsFrom: private repos and non-issue subjects are skipped without API
 })
 
 // A thread on GitHub, as the bot's token sees it: every call is logged, in order. `fail` maps a
-// path fragment to the status its calls fail with — or to [status, how many times].
+// path fragment to the status its calls fail with — or to [status, how many times, GitHub's words].
 function liveThread({ comments = [], fail = {} } = {}) {
   const calls = []
-  const failures = Object.fromEntries(Object.entries(fail).map(([what, f]) => [what, Array.isArray(f) ? { status: f[0], left: f[1] } : { status: f, left: Infinity }]))
+  const failures = Object.fromEntries(Object.entries(fail).map(([what, f]) => [what, Array.isArray(f) ? { status: f[0], left: f[1] ?? Infinity, words: f[2] ?? '' } : { status: f, left: Infinity, words: '' }]))
   const issue = { id: 7, title: 'Fix it', body: 'old', user: user('alice'), state: 'open', html_url: 'u7', created_at: '2026-01-01T00:00:00Z' }
   return {
     calls,
@@ -127,7 +127,7 @@ function liveThread({ comments = [], fail = {} } = {}) {
       for (const [what, f] of Object.entries(failures)) {
         if (!path.includes(what) || f.left <= 0) continue
         f.left--
-        throw Object.assign(new Error(`${method} ${path}: ${f.status}`), { status: f.status })
+        throw Object.assign(new Error(`${method} ${path}: ${f.status} ${f.words}`), { status: f.status })
       }
       if (method === 'PATCH') return null
       if (/\/issues\/\d+$/.test(path)) return issue
@@ -165,7 +165,7 @@ test('readThreads: a thread that can’t be marked read is left for the next pol
   const read = { sweeps, login: 'botlite', seen, accept: (r) => (seen.add(r.id), accepted.push(r.id)), log: () => {} }
   assert.equal(await readThreads(gh, { ...read, notifications: [issueNote()] }), true)
   assert.deepEqual(accepted, []) // not read, and the thread is marked read: no poll would list it again…
-  assert.deepEqual(sweeps, { 'acme/app#7': { repo: 'acme/app', number: 7, since: '2026-09-21T11:00:00Z' } }) // …so it keeps its second look
+  assert.deepEqual(sweeps, { 'acme/app#7': { repo: 'acme/app', number: 7, since: '2026-09-21T11:00:00Z', tries: 1 } }) // …so it keeps its second look
   await readThreads(gh, { ...read, notifications: [] })
   assert.deepEqual(accepted, ['ic:10'])
   assert.deepEqual(sweeps, {})
@@ -197,13 +197,27 @@ test('sweep: the earliest look back wins — none at all means a day — and a t
   sweep(sweeps, t, '2026-09-22T10:40:00Z')
   assert.equal(sweeps['acme/app#7'].since, null)
 
-  const gone = liveThread({ fail: { '/issues/7': 404 } })
-  const logs = []
-  await readThreads(gone, { notifications: [], sweeps, login: 'botlite', seen: new Set(), accept: () => {}, log: (l) => logs.push(l) })
-  assert.deepEqual(sweeps, {}) // not there any more (or not ours to read): no second look forever
-  assert.match(logs[0], /second look at acme\/app#7: .*404/)
-  const flaky = liveThread({ fail: { '/issues/7': 502 } })
+  const look = async (fail, logs = []) => {
+    await readThreads(liveThread({ fail: { '/issues/7': fail } }), { notifications: [], sweeps, login: 'botlite', seen: new Set(), accept: () => {}, log: (l) => logs.push(l) })
+    return logs
+  }
+  // Gone, not ours to read, or refused outright: that won't change, so there's no second look forever.
+  for (const fail of [404, 410, 401, 422, [403, Infinity, 'Resource not accessible by personal access token']]) {
+    sweep(sweeps, t, null)
+    const logs = await look(fail)
+    assert.deepEqual(sweeps, {}, String(fail))
+    assert.match(logs[0], /second look at acme\/app#7: .* — dropped$/)
+  }
+  // A rate limit, GitHub's 5xx, the network: next time, again — for a while.
+  for (const fail of [502, 429, [403, Infinity, 'API rate limit exceeded for user ID 42.'], [403, Infinity, 'You have exceeded a secondary rate limit']]) {
+    sweep(sweeps, t, null)
+    await look(fail)
+    assert.deepEqual(Object.keys(sweeps), ['acme/app#7'], String(fail))
+    delete sweeps['acme/app#7']
+  }
   sweep(sweeps, t, null)
-  await readThreads(flaky, { notifications: [], sweeps, login: 'botlite', seen: new Set(), accept: () => {}, log: () => {} })
-  assert.deepEqual(Object.keys(sweeps), ['acme/app#7']) // a passing failure: next time, again
+  for (let i = 1; i < 30; i++) await look(502)
+  assert.equal(sweeps['acme/app#7'].tries, 29)
+  assert.match((await look(502))[0], /— dropped$/) // the 30th try gives up, whatever the reason
+  assert.deepEqual(sweeps, {})
 })
