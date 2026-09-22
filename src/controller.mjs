@@ -39,7 +39,7 @@ import { gitPushHandler } from './gitpush.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
 import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
 import { planWrite, publishWrite } from './publish.mjs'
-import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome } from './deploy.mjs'
+import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome, recordedBranch, recordBranch } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 
@@ -75,7 +75,8 @@ const cfg = {
 if (!cfg.boxliteKey) throw new Error('missing env BOXLITE_API_KEY or BOXLITE_SECRET_BOXLITE')
 const stateDir = path.dirname(cfg.stateFile)
 /** The build we run — commit, repo and tracked branch of this checkout — for /deploy (deploy.mjs). */
-const build = selfBuild(path.dirname(path.dirname(fileURLToPath(import.meta.url))), env.BOTLITE_REF || 'main')
+const build = selfBuild(path.dirname(path.dirname(fileURLToPath(import.meta.url))), { recorded: recordedBranch(stateDir), fallback: env.BOTLITE_REF || 'main' })
+if (build.branch) recordBranch(stateDir, build.branch) // where a rollback's detached checkout goes back to
 await mkdir(stateDir, { recursive: true, mode: 0o700 })
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
@@ -244,7 +245,10 @@ async function turn(key, req, pr, prompt, sessionId, plan) {
   try {
     const { model, effort } = running()
     log(`${key}: turn on ${model ?? "Codex's default model"}${effort ? `, ${effort} effort` : ''}`)
-    return await runTurn({ bl, cfg: { ...cfg, model: model ?? undefined, effort: effort ?? undefined }, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
+    const out = await runTurn({ bl, cfg: { ...cfg, model: model ?? undefined, effort: effort ?? undefined }, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
+    if (out.tooling?.error) log(`${key}: agent-tooling not installed/updated: ${out.tooling.error}`)
+    else if (out.tooling) log(`${key}: agent-tooling ${out.tooling.version}`)
+    return out
   } finally {
     jobs.revoke(jobToken)
   }
@@ -317,17 +321,19 @@ async function command(req, cmd) {
 }
 
 /**
- * `/deploy`: restart onto the tracked branch, the way `ctl restart` does — re-attach it (a rollback
- * leaves the checkout detached) and SIGTERM ourselves, so running turns finish first and the boot
- * loop pulls and starts the new build. Nothing here needs a credential.
+ * `/deploy`: restart onto the tracked branch, the way `ctl restart` does — re-attach it if a
+ * rollback left the checkout detached, and SIGTERM ourselves, so running turns finish first and the
+ * boot loop pulls and starts the new build. Nothing here needs a credential.
  */
 let restarting = false
 function restart() {
   restarting = true
-  try {
-    execFileSync('git', ['-C', build.dir, 'checkout', '--quiet', build.ref], { stdio: 'ignore' })
-  } catch (e) {
-    log(`deploy: couldn't check out ${build.ref}: ${e.message}`)
+  if (!build.branch) {
+    try {
+      execFileSync('git', ['-C', build.dir, 'checkout', '--quiet', build.ref], { stdio: 'ignore' })
+    } catch (e) {
+      log(`deploy: couldn't check out ${build.ref}: ${e.message}`)
+    }
   }
   log(`deploy: restarting onto ${build.ref} (${state.deploy.to.slice(0, 7)}), asked by @${state.deploy.by}`)
   process.kill(process.pid, 'SIGTERM')

@@ -90,12 +90,57 @@ function ensureCodex(version) {
   }
 }
 
+// boxlite-ai/agent-tooling: BoxLite's shared Codex plugin (skills, auditors, hooks), in every box.
+const TOOLING = { url: 'https://github.com/boxlite-ai/agent-tooling.git', ref: 'main', marketplace: 'boxlite-agent-tooling', plugin: 'boxlite-agent-tooling@boxlite-agent-tooling' }
+const TOOLING_FRESH_MS = 10 * 60_000
+
+/**
+ * Install agent-tooling into this thread's CODEX_HOME (it travels with the sealed context), and
+ * bring it to the tip of its branch when the last check is over 10 minutes old — Codex loads
+ * plugins when a task starts, so the turn gets the newest. Best effort: a slow GitHub never fails
+ * a turn. Its hooks run too: Codex runs with --dangerously-bypass-hook-trust (src/codex.mjs).
+ */
+function ensureAgentTooling() {
+  if (E.AGENT_TOOLING === 'off') return null
+  const home = path.join(CTX, 'codex')
+  const env = { PATH: E.PATH, HOME: path.join(CTX, 'home'), CODEX_HOME: home, GIT_TERMINAL_PROMPT: '0' }
+  const plugin = (...args) => JSON.parse(execFileSync('codex', ['plugin', ...args, '--json'], { env, cwd: CTX, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 }).toString())
+  const stamp = path.join(home, '.agent-tooling-checked')
+  try {
+    const added = plugin('marketplace', 'add', TOOLING.url, '--ref', TOOLING.ref)
+    let checked = 0
+    try {
+      checked = Number(readFileSync(stamp, 'utf8'))
+    } catch {
+      /* never checked in this context */
+    }
+    if (added.alreadyAdded && Date.now() - checked > TOOLING_FRESH_MS) plugin('marketplace', 'upgrade', TOOLING.marketplace)
+    const { version } = plugin('add', TOOLING.plugin)
+    writeFileSync(stamp, String(Date.now()))
+    return { version }
+  } catch (e) {
+    return { error: String(e.stderr || e.message).trim().slice(-300) }
+  }
+}
+
 /** Clone once; a PR's checkout follows its head (fresh commits → fresh tree), an issue's stays put. */
 function checkout() {
   if (!existsSync(path.join(REPO_DIR, '.git'))) sh('git', ['clone', '--quiet', '--filter=blob:none', `https://github.com/${E.REPO}.git`, REPO_DIR])
   if (E.IS_PR !== '1' || sh('git', ['rev-parse', 'HEAD'], { cwd: REPO_DIR }).toString().trim() === E.HEAD_SHA) return
   sh('git', ['fetch', '--quiet', 'origin', `+pull/${E.NUMBER}/head:refs/botlite/pr`, `+refs/heads/${E.BASE_REF}:refs/remotes/origin/${E.BASE_REF}`], { cwd: REPO_DIR })
   sh('git', ['checkout', '--quiet', '--force', '--detach', 'refs/botlite/pr'], { cwd: REPO_DIR })
+}
+
+/** agent-tooling's hooks keep their state in the checkout (.agents/state/): never part of a change. */
+function excludeToolingState() {
+  const file = path.join(REPO_DIR, '.git', 'info', 'exclude')
+  let text = ''
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    mkdirSync(path.dirname(file), { recursive: true })
+  }
+  if (!text.split('\n').includes('.agents/state/')) writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.agents/state/\n`)
 }
 
 /** A write turn starts clean from the controller's base commit (a follow-up's is the bot's own branch). */
@@ -168,7 +213,9 @@ async function main() {
     for (const d of ['home', 'codex']) mkdirSync(path.join(CTX, d), { recursive: true })
     writeAuth()
     ensureCodex(E.CODEX_VERSION)
+    result.tooling = ensureAgentTooling()
     checkout()
+    excludeToolingState()
     if (E.PUSH_REF) startFromBase()
     Object.assign(result, await codex(JSON.parse(E.BOTLITE_ARGS), prompt))
     try {

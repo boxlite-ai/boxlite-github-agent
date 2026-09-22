@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="640" viewBox="0 0 760 640" role="img" aria-labelledby="t">
+  <title id="t">The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. Live, it's marked good and says so in the thread; a build that fails to start three times is rolled back to the last good one, and the thread is told.</title>
+  <style>
+    :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #151b23; --frame: #3d444d; --ink: #f0f6fc; --muted: #9198a1; --rule: #3d444d; --rule-strong: #656c76; --bubble: #0d1117; --blue: #4493f8; --blue-soft: #102a4c; --amber: #d29922; --amber-soft: #2e2410; --green: #3fb950; }
+    }
+    text { fill: var(--ink); font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; }
+    .small { font-size: 12px; }
+    .muted { fill: var(--muted); }
+    .ok { fill: var(--green); font-weight: 600; }
+    .amber { fill: var(--amber); }
+    .frame { fill: var(--bg); stroke: var(--frame); }
+    .ext { fill: var(--bg); stroke: var(--rule-strong); stroke-width: 1.2; }
+    .trusted { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.6; }
+    .card { fill: var(--bg); stroke: var(--rule-strong); }
+    .bubble { fill: var(--bubble); stroke: var(--rule); }
+    .life { stroke: var(--rule-strong); stroke-dasharray: 3 4; }
+    .edge { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+    .back { stroke: var(--ink); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; opacity: 0.8; }
+    .good { stroke: var(--green); stroke-width: 1.6; fill: none; }
+    .bad { stroke: var(--amber); stroke-width: 1.6; fill: none; stroke-dasharray: 6 4; }
+    .ah { fill: var(--ink); }
+    .ah-green { fill: var(--green); }
+    .ah-amber { fill: var(--amber); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-green" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-amber" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="frame" x="0.5" y="0.5" width="759" height="639" rx="12"/>
+
+  <!-- lanes -->
+  <rect class="ext" x="12" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="80" y="39" text-anchor="middle">you, on GitHub</text>
+  <rect class="trusted" x="212" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="280" y="39" text-anchor="middle">controller</text>
+  <rect class="trusted" x="412" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="480" y="39" text-anchor="middle">launcher</text>
+  <rect class="ext" x="612" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="680" y="39" text-anchor="middle">main</text>
+  <line class="life" x1="80" y1="52" x2="80" y2="628"/>
+  <line class="life" x1="280" y1="52" x2="280" y2="628"/>
+  <line class="life" x1="480" y1="52" x2="480" y2="628"/>
+  <line class="life" x1="680" y1="52" x2="680" y2="628"/>
+
+  <!-- 1 ask for a change to the bot itself -->
+  <rect class="bubble" x="6" y="68" width="148" height="44" rx="7"/>
+  <text class="small" x="80" y="86" text-anchor="middle">@boxliteai fix</text>
+  <text class="small" x="80" y="102" text-anchor="middle">yourself, open a PR</text>
+
+  <!-- 2 a draft PR; it can't merge -->
+  <line class="edge" x1="280" y1="144" x2="82" y2="144" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="136" text-anchor="middle">draft PR, from its fork</text>
+  <text class="small muted" x="180" y="160" text-anchor="middle">it can't merge: read-only</text>
+
+  <!-- 3 a human reviews and merges -->
+  <rect class="card" x="14" y="180" width="132" height="34" rx="7"/>
+  <text x="80" y="202" text-anchor="middle">review · merge</text>
+  <line class="edge" x1="80" y1="240" x2="678" y2="240" marker-end="url(#ah)"/>
+  <text class="small" x="580" y="232" text-anchor="middle">merged</text>
+
+  <!-- 4 /deploy -->
+  <line class="edge" x1="80" y1="290" x2="278" y2="290" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="282" text-anchor="middle">@boxliteai /deploy</text>
+  <text class="small muted" x="180" y="306" text-anchor="middle">admins only</text>
+  <line class="edge" x1="280" y1="340" x2="82" y2="340" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="332" text-anchor="middle">🚀 commits since the</text>
+  <text class="small muted" x="180" y="356" text-anchor="middle">running build</text>
+
+  <!-- 5 drain and exit -->
+  <rect class="card" x="190" y="376" width="180" height="34" rx="7"/>
+  <text x="280" y="398" text-anchor="middle">finish turns · exit</text>
+
+  <!-- 6 the boot loop pulls main, the launcher starts it -->
+  <line class="back" x1="680" y1="440" x2="482" y2="440" marker-end="url(#ah)"/>
+  <text class="small" x="580" y="432" text-anchor="middle">boot loop pulls main</text>
+  <rect class="card" x="392" y="460" width="176" height="34" rx="7"/>
+  <text x="480" y="482" text-anchor="middle">start new build</text>
+
+  <!-- 7 live, or rolled back -->
+  <line class="good" x1="480" y1="530" x2="82" y2="530" marker-end="url(#ah-green)"/>
+  <text class="small ok" x="280" y="522" text-anchor="middle">✅ live · marked good</text>
+  <line class="bad" x1="480" y1="590" x2="82" y2="590" marker-end="url(#ah-amber)"/>
+  <text class="small amber" x="280" y="582" text-anchor="middle">⚠️ fails 3× · rolled back</text>
+  <text class="small muted" x="280" y="606" text-anchor="middle">to the last good build</text>
+</svg>

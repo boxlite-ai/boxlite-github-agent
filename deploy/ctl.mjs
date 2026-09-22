@@ -45,8 +45,9 @@ if (cmd === 'status') {
 } else if (cmd === 'logs') {
   console.log((await sh(`tail -n ${Number(arg) || 80} ~/.botlite/controller.log 2>/dev/null || echo "(no log yet)"`)).out)
 } else if (cmd === 'restart') {
-  // Re-attach the tracked branch first: a rollback (src/main.mjs) leaves the checkout detached.
-  const r = await sh("git -C ~/botlite checkout --quiet \"${BOTLITE_REF:-main}\" 2>/dev/null; pkill -f 'botlite/src/mai[n].mjs' && echo restarting || echo 'controller process not found'")
+  // A rollback (src/main.mjs) leaves the checkout detached: re-attach the branch it was last on
+  // (recorded by the controller) — never a stale BOTLITE_REF over a branch someone checked out.
+  const r = await sh("cd ~/botlite && { git symbolic-ref -q HEAD >/dev/null || git checkout --quiet \"$(cat ~/.botlite/branch 2>/dev/null || echo \"${BOTLITE_REF:-main}\")\"; }; pkill -f 'botlite/src/mai[n].mjs' && echo restarting || echo 'controller process not found'")
   console.log(r.out)
 } else if (cmd === 'webhook') {
   const { url } = await bl.previewUrl(id, 8788)

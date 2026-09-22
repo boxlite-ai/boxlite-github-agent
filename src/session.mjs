@@ -117,5 +117,5 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobTok
     : result?.setupError || run.error || result?.spawnError || `no answer (exit ${result?.code ?? '?'}): ${stderr.slice(-400)}`
   // Codex's exact words when the session to resume is gone (its snapshot was lost/rejected).
   const sessionLost = Boolean(sessionId) && !message && /no rollout found for thread id/.test(stderr)
-  return { sessionId: run.sessionId ?? sessionId, message, error, sessionLost, push: result?.push ?? null }
+  return { sessionId: run.sessionId ?? sessionId, message, error, sessionLost, push: result?.push ?? null, tooling: result?.tooling ?? null }
 }

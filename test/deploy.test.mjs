@@ -4,23 +4,38 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome, sensitiveFiles } from '../src/deploy.mjs'
+import { selfBuild, deployPlan, markGood, takeRollback, deployOutcome, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
 const C = 'c'.repeat(40)
 
-test('selfBuild: commit, owner/repo from origin (https or ssh) and the tracked branch', () => {
+test('selfBuild: commit and owner/repo from origin (https or ssh)', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'self-'))
   const git = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim()
-  git('init', '-q')
+  git('init', '-q', '-b', 'main')
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x')
   git('remote', 'add', 'origin', 'https://example.com/x.git')
   for (const url of ['https://github.com/boxlite-ai/boxlite-github-agent.git', 'git@github.com:boxlite-ai/boxlite-github-agent.git', 'https://github.com/boxlite-ai/boxlite-github-agent']) {
     git('remote', 'set-url', 'origin', url)
-    assert.deepEqual(selfBuild(dir, 'main'), { dir, ref: 'main', commit: git('rev-parse', 'HEAD'), repo: 'boxlite-ai/boxlite-github-agent' }, url)
+    assert.deepEqual(selfBuild(dir), { dir, branch: 'main', ref: 'main', commit: git('rev-parse', 'HEAD'), repo: 'boxlite-ai/boxlite-github-agent' }, url)
   }
-  assert.deepEqual(selfBuild(path.join(dir, 'nope')), { dir: path.join(dir, 'nope'), ref: 'main', commit: null, repo: null })
+  assert.deepEqual(selfBuild(path.join(dir, 'nope')), { dir: path.join(dir, 'nope'), branch: null, ref: 'main', commit: null, repo: null })
+})
+
+test('selfBuild: the tracked branch is the one checked out — not a stale BOTLITE_REF; detached, the last one it was on', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'self-'))
+  const git = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim()
+  git('init', '-q', '-b', 'main')
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x')
+  // Seen live: the box was created with BOTLITE_REF=botlite-device-login, and later moved to main.
+  assert.deepEqual([selfBuild(dir, { fallback: 'botlite-device-login' }).branch, selfBuild(dir, { fallback: 'botlite-device-login' }).ref], ['main', 'main'])
+  const state = mkdtempSync(path.join(tmpdir(), 'state-'))
+  assert.equal(recordedBranch(state), null)
+  recordBranch(state, 'main')
+  git('checkout', '-q', '--detach') // what a rollback leaves
+  assert.deepEqual([selfBuild(dir, { recorded: recordedBranch(state), fallback: 'botlite-device-login' }).branch, selfBuild(dir, { recorded: recordedBranch(state), fallback: 'botlite-device-login' }).ref], [null, 'main'])
+  assert.equal(selfBuild(dir, { fallback: 'botlite-device-login' }).ref, 'botlite-device-login') // only with nothing better
 })
 
 test('deployPlan: the commits on the branch since the running build, as GitHub compares them', async () => {

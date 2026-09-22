@@ -19,8 +19,11 @@ the code before it answers.
 
 - **One box and one Codex session per issue or PR.** Follow-ups resume the session. A PR's
   checkout follows its latest head.
-- **Codex may do anything in its box:** no sandbox, no approval prompts, `sudo`, network, live web
-  search. The microVM is the boundary, and nothing worth stealing is ever inside it.
+- **Codex may do anything in its box:** no sandbox, no approval prompts, no hook reviews, `sudo`,
+  network, live web search. The microVM is the boundary, and nothing worth stealing is ever inside it.
+- **Every box runs [agent-tooling](https://github.com/boxlite-ai/agent-tooling),** BoxLite's shared
+  Codex plugin with its skills, auditors and hooks. It's refreshed to the tip of `main` when it's
+  over 10 minutes old.
 - **Only the controller holds credentials.** Codex runs on a stand-in login whose token works only
   on the controller's proxy, and only until the turn ends.
 - **PRs only for people who may ask.** Codex commits in its box; the controller checks the change
@@ -78,19 +81,10 @@ there. People are kept by GitHub id, since a login can change hands.
 
 ### Improving itself
 
-The bot can open PRs on its own repo like any other, and `/deploy` puts them live once merged.
+![The bot improving itself: asked to change its own code, it opens a draft PR from its fork, and it can't merge (it has read access). A human reviews and merges into main. An admin says /deploy: the controller lists the commits since the running build, finishes running turns and exits; the boot loop pulls main and the launcher starts the new build. Live, it's marked good and says so in the thread; a build that fails to start three times is rolled back to the last good one, and the thread is told.](docs/deploy.svg)
 
-- **A human always merges.** The bot has read access to its own repo, so it can't merge or push
-  there. Its PRs are drafts from its fork, and a PR that touches its trust boundary (who may
-  publish, what gets checked and pushed, credentials, the runner, deploy) opens with a warning.
-- **`/deploy` only deploys what's merged.** It shows the commits on `main` since the running
-  build, lets running turns finish, and restarts onto `main`, as `ctl restart` does. It refuses
-  if `main`'s history was rewritten. The next build reports back in the same thread.
-- **A build that won't start is rolled back.** The launcher (`src/main.mjs`) marks a build good
-  once it's live. If a new build fails to go live three times in a row, the launcher rolls back to
-  the last good one and says so in the thread.
-- **Nothing new reaches the session box.** Deploying needs no credential, because the controller
-  restarts itself.
+A bot PR that touches its own trust boundary (access, publishing, the push route, credentials, the
+runner, deploy) opens with a warning.
 
 ## Who holds what
 
