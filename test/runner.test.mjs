@@ -23,6 +23,15 @@ writeFileSync(
   path.join(bin, 'codex'),
   `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "codex-cli ${CODEX_VERSION}"; exit 0; fi
+if [ "$1" = "plugin" ]; then
+  echo "$*" >> "$CODEX_HOME/plugin-calls.log"
+  case "$*" in
+    *"marketplace add"*) if [ -f "$CODEX_HOME/.marketplace" ]; then echo '{"alreadyAdded":true}'; else touch "$CODEX_HOME/.marketplace"; echo '{"alreadyAdded":false}'; fi ;;
+    *"marketplace upgrade"*) echo '{"errors":[]}' ;;
+    *) echo '{"version":"0.1.18"}' ;;
+  esac
+  exit 0
+fi
 out=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
 prompt=$(cat)
@@ -79,8 +88,32 @@ test('runner: streams Codex events, reports the answer, seals the context onto t
   const { r, lines, result } = box(ctx, 'first question')
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(JSON.parse(lines[0]), { type: 'thread.started', thread_id: 'th-1' })
-  assert.deepEqual(result, { type: 'botlite.result', code: 0, lastMessage: 'Answer to: first question' })
+  assert.deepEqual(result, { type: 'botlite.result', code: 0, lastMessage: 'Answer to: first question', tooling: { version: '0.1.18' } })
   assert.ok(!readFileSync(SNAPSHOT).includes('first question')) // sealed, not plain tar
+})
+
+test('runner: agent-tooling goes into every box — added once, refreshed when its last check is over 10 minutes old', () => {
+  const ctx = path.join(root, 'box-tooling')
+  const own = { SNAPSHOT: path.join(root, 'vol-tooling', 'context.sealed') } // its own thread: the others' turn counts stay put
+  box(ctx, 'first', own)
+  const calls = () => readFileSync(path.join(ctx, 'codex', 'plugin-calls.log'), 'utf8').trim().split('\n')
+  assert.deepEqual(calls(), [
+    'plugin marketplace add https://github.com/boxlite-ai/agent-tooling.git --ref main --json',
+    'plugin add boxlite-agent-tooling@boxlite-agent-tooling --json', // a fresh marketplace needs no upgrade
+  ])
+  box(ctx, 'again, right away', own)
+  assert.equal(calls().filter((c) => c.includes('upgrade')).length, 0) // checked minutes ago
+  writeFileSync(path.join(ctx, 'codex', '.agent-tooling-checked'), String(Date.now() - 11 * 60_000))
+  const { result } = box(ctx, 'later', own)
+  assert.deepEqual(calls().slice(-3), [
+    'plugin marketplace add https://github.com/boxlite-ai/agent-tooling.git --ref main --json',
+    'plugin marketplace upgrade boxlite-agent-tooling --json', // the tip of main
+    'plugin add boxlite-agent-tooling@boxlite-agent-tooling --json',
+  ])
+  assert.deepEqual(result.tooling, { version: '0.1.18' })
+  // Its hooks' state lives in the checkout; git never picks it up (so a PR can't carry it).
+  assert.equal(readFileSync(path.join(ctx, 'repo', '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l === '.agents/state/').length, 1)
+  assert.equal(box(path.join(root, 'box-off'), 'no tooling', { ...own, AGENT_TOOLING: 'off' }).result.tooling, null)
 })
 
 test('runner: Codex runs on the stand-in login — the job token, no API key — which is never saved', () => {

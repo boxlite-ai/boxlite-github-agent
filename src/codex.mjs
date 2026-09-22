@@ -27,6 +27,9 @@ export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model, effort }) 
     '--skip-git-repo-check',
     // Everything allowed, explicitly: the microVM is the sandbox and holds nothing to protect.
     '--dangerously-bypass-approvals-and-sandbox',
+    // Hooks too — agent-tooling's (box/session.mjs), which a non-interactive turn could never
+    // approve, and the repo's own: they can do no more than Codex already can in here.
+    '--dangerously-bypass-hook-trust',
     '-c', 'approval_policy="never"',
     '-c', 'sandbox_mode="danger-full-access"',
     '-c', 'web_search="live"',

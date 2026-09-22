@@ -1,24 +1,50 @@
 // The bot deploying itself, controller side. What goes live is only ever what a human merged on
-// the tracked branch (BOTLITE_REF, main): the bot can't merge — it has read access to its own
-// repo — and `/deploy` (admins only, access.mjs) just restarts the controller onto that branch, as
-// `ctl restart` does. The launcher (main.mjs) rolls back a build that won't go live; this module
-// reads what happened when the next build comes up, and says so in the thread that asked.
+// the tracked branch: the bot can't merge — it has read access to its own repo — and `/deploy`
+// (admins only, access.mjs) just restarts the controller onto that branch, as `ctl restart` does.
+// The launcher (main.mjs) rolls back a build that won't go live; this module reads what happened
+// when the next build comes up, and says so in the thread that asked.
+//
+// The tracked branch is the one the checkout is on — recorded in <state dir>/branch at every
+// start, so a rollback (which detaches the checkout) knows where to re-attach. BOTLITE_REF, fixed
+// when the box was created, is only the last resort: it goes stale when someone moves the
+// checkout (seen live: it named a PR branch long merged, and a restart went back to it).
 import { execFileSync } from 'node:child_process'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const short = (sha) => String(sha ?? '').slice(0, 7)
 
-/** The build this controller runs: its commit, its repo (owner/name from origin) and branch. */
-export function selfBuild(dir, ref = 'main') {
+/**
+ * The build this controller runs: its commit, its repo (owner/name from origin), the branch the
+ * checkout is on (null while detached) and `ref`, the branch it tracks: that one, else `recorded`
+ * (the last branch it was on), else `fallback`.
+ */
+export function selfBuild(dir, { recorded = null, fallback = 'main' } = {}) {
   const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  let branch = null
+  try {
+    branch = git('symbolic-ref', '--short', '-q', 'HEAD') || null
+  } catch {
+    /* detached */
+  }
+  const ref = branch ?? recorded ?? fallback
   try {
     const url = git('remote', 'get-url', 'origin')
-    return { dir, ref, commit: git('rev-parse', 'HEAD'), repo: /github\.com[:/]([\w.-]+\/[\w.-]+?)(\.git)?$/.exec(url)?.[1] ?? null }
+    return { dir, branch, ref, commit: git('rev-parse', 'HEAD'), repo: /github\.com[:/]([\w.-]+\/[\w.-]+?)(\.git)?$/.exec(url)?.[1] ?? null }
   } catch {
-    return { dir, ref, commit: null, repo: null }
+    return { dir, branch, ref, commit: null, repo: null }
   }
 }
+
+/** The branch the checkout was last on (see above), and recording it. */
+export const recordedBranch = (stateDir) => {
+  try {
+    return readFileSync(path.join(stateDir, 'branch'), 'utf8').trim() || null
+  } catch {
+    return null
+  }
+}
+export const recordBranch = (stateDir, branch) => writeFileSync(path.join(stateDir, 'branch'), `${branch}\n`)
 
 /**
  * What `/deploy` would put live: the commits on the tracked branch since the running build.

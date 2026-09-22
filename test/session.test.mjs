@@ -67,7 +67,7 @@ test('runTurn: runs the in-box runner attached, answers from the last message, s
     },
   })
   const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, pr: { headSha: 'abc', baseRef: 'main' }, prompt: 'PROMPT', ...via })
-  assert.deepEqual(out, { sessionId: 'th-1', message: 'Final answer.', error: null, sessionLost: false, push: null })
+  assert.deepEqual(out, { sessionId: 'th-1', message: 'Final answer.', error: null, sessionLost: false, push: null, tooling: null })
 
   const [, boxId, exec] = bl.calls.find((c) => c[0] === 'startExec')
   assert.equal(boxId, 'box-1')

@@ -48,7 +48,7 @@ test('e2e: a real Codex turn — then a resume — goes through the proxy on the
   const turn = (args, prompt) =>
     new Promise((resolve) => {
       const child = spawn(process.execPath, [path.resolve('box/session.mjs')], {
-        env: { PATH: process.env.PATH, CTX: ctx, CONTEXT_KEY: Buffer.alloc(32).toString('base64'), REPO: 'acme/app', NUMBER: '7', IS_PR: '0', CODEX_VERSION, BOTLITE_ARGS: JSON.stringify(args), BOTLITE_JOB_TOKEN: token },
+        env: { PATH: process.env.PATH, CTX: ctx, CONTEXT_KEY: Buffer.alloc(32).toString('base64'), REPO: 'acme/app', NUMBER: '7', IS_PR: '0', CODEX_VERSION, BOTLITE_ARGS: JSON.stringify(args), BOTLITE_JOB_TOKEN: token, AGENT_TOOLING: 'off' }, // the model path only: no GitHub
       })
       let stdout = ''
       child.stdout.on('data', (d) => (stdout += d))
