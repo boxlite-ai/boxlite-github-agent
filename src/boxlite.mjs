@@ -4,6 +4,7 @@
 // swaps in on the way out. Exec is fire-and-forget on the wire, and an exec nobody is attached to
 // is reaped after ~5 min (SIGHUP → SIGTERM → SIGKILL), so a turn always runs attached.
 const DEFAULT_BASE = 'https://api.boxlite.ai'
+const STDIN_FRAME = 1024 * 1024
 
 export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket } = {}) {
   const root = base.replace(/\/+$/, '')
@@ -68,7 +69,9 @@ export function boxlite(apiKey, { base = DEFAULT_BASE, fetchImpl = fetch, WebSoc
       }, timeoutMs)
       ws.onopen = () => {
         opened = true
-        if (stdin) ws.send(Buffer.from(stdin))
+        // In frames of at most 1 MiB: a turn's stdin can carry a Slack request's files.
+        const bytes = Buffer.from(stdin ?? '')
+        for (let i = 0; i < bytes.length; i += STDIN_FRAME) ws.send(bytes.subarray(i, i + STDIN_FRAME))
         ws.send(JSON.stringify({ type: 'stdin_eof' }))
       }
       ws.onmessage = ({ data }) => {

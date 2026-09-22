@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy @botlite onto BoxLite: the controller box (session boxes — one per issue/PR — are
-# created by the controller on demand; the context volume must exist or be creatable).
+# Deploy @botlite onto BoxLite: the controller box (session boxes — one per issue, PR or Slack
+# thread — are created by the controller on demand; the context volume must exist or be creatable).
 #
 # Only BOXLITE_API_KEY is required. Anything else can be handed over later — the controller waits
 # for it, and `node deploy/ctl.mjs status` says what it's waiting for:
@@ -14,6 +14,10 @@
 #                    link and one-time code show up in `node deploy/ctl.mjs status`
 #   CONTEXT_SECRET   seals thread contexts; else the controller generates one and keeps it. Pass
 #                    the same one on redeploys to keep threads' context across a new box.
+#   WEBHOOK_SECRET   the GitHub App webhook's secret, likewise (else the App needs the new one)
+#
+# The Slack app's tokens, and Slack threads' own context secret, are handed over afterwards:
+# `ctl slack-tokens`, or the deploy workflow's handover (README: "From GitHub").
 #
 # Nothing is written to disk and no credential appears in any process's argv (curl gets its auth
 # header through a pipe, jq reads secrets from its environment). Every credential passed here
@@ -139,6 +143,7 @@ jq -n --arg name "$NAME" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${
     auto_stop: 0,
     env: ({VOLUME: $volume, BOTLITE_REF: $ref, PORT: $port}
           + (if $ENV.CONTEXT_SECRET then {CONTEXT_SECRET: $ENV.CONTEXT_SECRET} else {} end)
+          + (if $ENV.WEBHOOK_SECRET then {WEBHOOK_SECRET: $ENV.WEBHOOK_SECRET} else {} end)
           + (if $account == "" then {} else {CHATGPT_ACCOUNT_ID: $account} end)
           + (if $refreshed == "" then {} else {CHATGPT_LAST_REFRESH: $refreshed} end)
           + (if $model == "" then {} else {CODEX_MODEL: $model} end)

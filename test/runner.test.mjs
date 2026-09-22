@@ -40,6 +40,7 @@ echo "turn: $prompt" >> "$CODEX_HOME/sessions/rollout.jsonl"
 grep -o '"access_token":"[^"]*"' "$CODEX_HOME/auth.json" >> "$CODEX_HOME/sessions/rollout.jsonl"
 echo "api-key-env: \${OPENAI_API_KEY:-none}" >> "$CODEX_HOME/sessions/rollout.jsonl"
 case "$prompt" in *COMMIT*) printf 'fixed\\n' > fix.txt && git add fix.txt && git commit -qm "Fix the thing" ;; esac
+case "$prompt" in *FAIL*) echo '{"type":"turn.failed","error":{"message":"boom"}}'; exit 1 ;; esac
 echo '{"type":"thread.started","thread_id":"th-1"}'
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}'
 echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
@@ -51,11 +52,11 @@ chmodSync(path.join(bin, 'codex'), 0o755)
 const KEY = randomBytes(32).toString('base64')
 const SNAPSHOT = path.join(root, 'vol', 'sessions', 'acme', 'app', '7', 'context.sealed')
 
-function box(ctx, prompt, extraEnv = {}) {
+function box(ctx, prompt, extraEnv = {}, files = []) {
   mkdirSync(path.join(ctx, 'repo'), { recursive: true })
   if (!existsSync(path.join(ctx, 'repo', '.git'))) execFileSync('git', ['init', '-q', path.join(ctx, 'repo')])
   const r = spawnSync(process.execPath, [RUNNER], {
-    input: prompt,
+    input: JSON.stringify({ prompt, files }),
     encoding: 'utf8',
     env: {
       PATH: `${bin}:${process.env.PATH}`,
@@ -137,6 +138,43 @@ test('runner: every codex in the box goes through the controller — the routing
   }
 })
 
+test('runner: a Slack thread works in its own directory; its files land where the prompt says — and nowhere outside slack-files/', () => {
+  const ctx = path.join(root, 'box-slack')
+  const slack = { REPO: '', SNAPSHOT: path.join(root, 'vol-slack', 'T01', 'C01', '1712345678.000100', 'context.sealed') }
+  const files = [
+    { path: 'slack-files/1712345699.000200/ci.log', data: Buffer.from('npm ERR! boom\n').toString('base64') },
+    { path: 'slack-files/../../escape.txt', data: Buffer.from('no').toString('base64') },
+    { path: '/etc/passwd', data: Buffer.from('no').toString('base64') },
+  ]
+  const { result } = box(ctx, 'what failed?', slack, files)
+  assert.equal(result.code, 0)
+  assert.equal(readFileSync(path.join(ctx, 'work', 'slack-files', '1712345699.000200', 'ci.log'), 'utf8'), 'npm ERR! boom\n')
+  assert.equal(existsSync(path.join(ctx, 'escape.txt')), false)
+  assert.equal(existsSync(path.join(ctx, 'work', 'escape.txt')), false)
+  assert.equal(existsSync(path.join(ctx, 'repo', 'fix.txt')), false) // no checkout involved
+})
+
+test('runner: a failed turn never reports the previous turn’s answer', () => {
+  const ctx = path.join(root, 'box-stale')
+  const own = { SNAPSHOT: path.join(root, 'vol-stale', 'context.sealed') }
+  assert.match(box(ctx, 'first', own).result.lastMessage, /first$/)
+  const { result } = box(ctx, 'FAIL please', own) // the same box: last turn's answer file is still on its disk
+  assert.equal(result.code, 1)
+  assert.equal(result.lastMessage, undefined)
+})
+
+test('runner: a thread resumed on a fresh box is told its files are gone; on the same box it isn’t', () => {
+  const own = { SNAPSHOT: path.join(root, 'vol-moved', 'context.sealed') }
+  box(path.join(root, 'box-moved-a'), 'start', own)
+  const resume = (ctx) => ({ ...own, BOTLITE_ARGS: JSON.stringify(['exec', 'resume', '--json', '-o', path.join(ctx, 'last-message.md'), 'th-1', '-']) })
+  const ctx = path.join(root, 'box-moved-b') // a brand-new box: nothing on its disk yet
+  box(ctx, 'follow-up', resume(ctx))
+  const turns = () => readFileSync(path.join(ctx, 'codex', 'sessions', 'rollout.jsonl'), 'utf8').match(/^turn: .*$/gm)
+  assert.match(turns().at(-1), /^turn: \(From the controller, not a user: this thread has moved to a fresh machine/)
+  box(ctx, 'again', resume(ctx))
+  assert.equal(turns().at(-1), 'turn: again') // same box: nothing was lost
+})
+
 test('runner: Codex runs on the stand-in login — the job token, no API key — which is never saved', () => {
   const ctx = path.join(root, 'box-a')
   const rollout = readFileSync(path.join(ctx, 'codex', 'sessions', 'rollout.jsonl'), 'utf8')
@@ -185,7 +223,7 @@ async function writeTurn(ctx, prompt, token) {
   })
   let stdout = ''
   child.stdout.on('data', (d) => (stdout += d))
-  child.stdin.end(prompt)
+  child.stdin.end(JSON.stringify({ prompt, files: [] }))
   await new Promise((r) => child.on('close', r))
   return JSON.parse(stdout.trim().split('\n').at(-1))
 }

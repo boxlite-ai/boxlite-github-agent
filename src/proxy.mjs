@@ -1,10 +1,11 @@
 // The controller's public door for session boxes: the model endpoints of the bot's ChatGPT login,
-// plus a write turn's one git push (gitpush.mjs). A box's Codex presents its job token
-// (chatgpt.mjs); the proxy verifies it, swaps in the real access token + account id, and
-// streams the answer back. Every other ChatGPT
-// backend path Codex tries — plugins, MCP, analytics, settings — gets a 404: forwarding those with
-// the real token would let any request read the account's ChatGPT data. (A 404, never a 401: a
-// 401 sends Codex into its own token refresh, which can't work in a box and fails the turn.)
+// plus a write turn's one git push (gitpush.mjs) and, for a turn that has them, the team's tools
+// at /mcp/<service> (tools.mjs). A box's Codex presents its job token (chatgpt.mjs); the proxy
+// verifies it, swaps in the real access token + account id, and streams the answer back. Every
+// other ChatGPT backend path Codex tries — plugins, MCP, analytics, settings — gets a 404:
+// forwarding those with the real token would let any request read the account's ChatGPT data.
+// (A 404, never a 401: a 401 sends Codex into its own token refresh, which can't work in a box
+// and fails the turn.)
 import http from 'node:http'
 import { verifyJobToken } from './chatgpt.mjs'
 
@@ -16,7 +17,7 @@ const DROP_REQ = new Set(['host', 'connection', 'keep-alive', 'content-length', 
 // fetch has already decoded the upstream body, so its encoding/length headers no longer apply.
 const DROP_RES = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive'])
 
-export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.com', model, maxRequestsPerJob = 400, fetchImpl = fetch, log = () => {}, webhook, git, health = () => ({ ok: true }) }) {
+export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.com', model, maxRequestsPerJob = 400, fetchImpl = fetch, log = () => {}, webhook, git, tools, health = () => ({ ok: true }) }) {
   return http.createServer(async (req, res) => {
     if (req.url === '/healthz') {
       const h = health()
@@ -24,6 +25,7 @@ export function createProxy({ login, secret, jobs, upstream = 'https://chatgpt.c
     }
     if (webhook && req.method === 'POST' && req.url === '/webhook') return webhook(req, res) // GitHub App deliveries (webhook.mjs)
     if (git && req.url.startsWith('/git/')) return git(req, res) // a write turn's one push (gitpush.mjs)
+    if (tools && req.url.startsWith('/mcp/')) return tools(req, res) // Linear, Notion, Google Workspace (tools.mjs)
     if (!ALLOWED.some(([m, re]) => m === req.method && re.test(req.url))) return send(res, 404, 'not available through this proxy')
     const claims = verifyJobToken(secret, /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1])
     const job = claims && jobs.live.get(claims.jti)

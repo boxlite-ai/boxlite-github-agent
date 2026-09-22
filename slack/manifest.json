@@ -1,0 +1,47 @@
+{
+  "display_information": {
+    "name": "BoxLite",
+    "description": "A coding agent: mention it or DM it, and it works in its own BoxLite microVM, then answers in the thread.",
+    "background_color": "#1f2328"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "boxliteai",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "chat:write",
+        "reactions:write",
+        "users:read",
+        "files:read",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

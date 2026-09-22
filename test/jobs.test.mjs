@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scheduler } from '../src/jobs.mjs'
-import { loadState, saveState, takeQuota, quotaLeft } from '../src/state.mjs'
+import { loadState, saveState, takeQuota, quotaLeft, importSlackState } from '../src/state.mjs'
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -37,7 +37,7 @@ test('scheduler: at most `max` jobs at once across threads', async () => {
 test('state: defaults when missing, round-trips, owner-only file', async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state', 'state.json')
   const s = await loadState(file)
-  assert.deepEqual({ ...s, seen: [...s.seen] }, { unknown: {}, lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null })
+  assert.deepEqual({ ...s, seen: [...s.seen], slack: { ...s.slack, seen: [...s.slack.seen] } }, { unknown: {}, lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null, slack: { seen: [], threads: {}, usage: {}, deferred: [] } })
   s.seen.add('ic:1')
   s.threads['acme/app#7'] = { sessionId: 's1', boxId: 'b1' }
   s.lastModified = 'T1'
@@ -52,6 +52,35 @@ test('state: defaults when missing, round-trips, owner-only file', async () => {
   assert.deepEqual(again.threads, { 'acme/app#7': { sessionId: 's1', boxId: 'b1' } })
   assert.deepEqual([again.grants, again.paused, again.forks, again.codex, again.deploy], [s.grants, s.paused, s.forks, s.codex, s.deploy])
   assert.equal(statSync(file).mode & 0o777, 0o600)
+})
+
+test('state: Slack’s memory is apart from GitHub’s, round-trips, and forgets a thread quiet for 90 days', async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state.json')
+  const s = await loadState(file)
+  s.slack.seen.add('C01:1712345678.000100')
+  s.slack.threads['T01/C01/1712345678.000100'] = { sessionId: 's1', lastTs: '1712345678.000100', lastUsed: '2026-09-22T00:00:00.000Z' }
+  s.slack.threads['T01/C01/1700000000.000100'] = { sessionId: 'old', lastTs: '1700000000.000100', lastUsed: '2026-01-01T00:00:00.000Z' }
+  s.slack.deferred.push({ id: 'C01:1712345679.000100' })
+  await saveState(file, s, Date.parse('2026-09-22T12:00:00Z'))
+  const again = await loadState(file)
+  assert.deepEqual([...again.slack.seen], ['C01:1712345678.000100'])
+  assert.deepEqual(Object.keys(again.slack.threads), ['T01/C01/1712345678.000100']) // the January one is forgotten
+  assert.deepEqual(again.slack.deferred, [{ id: 'C01:1712345679.000100' }])
+  assert.equal(again.seen.size, 0) // GitHub's handled comments are another set
+})
+
+test('state: the Slack agent’s memory, handed over at the switch, carries on here', async () => {
+  const s = await loadState(path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state.json'))
+  s.slack.threads['T01/C01/1.1'] = { sessionId: 'mine', lastUsed: '2026-09-22T10:00:00.000Z' }
+  importSlackState(s, {
+    seen: ['C01:1.1', 'C01:2.2'],
+    threads: { 'T01/C01/1.1': { sessionId: 'older', lastUsed: '2026-09-21T10:00:00.000Z' }, 'T01/C01/2.2': { sessionId: 'theirs', lastUsed: '2026-09-22T09:00:00.000Z' } },
+    deferred: [{ id: 'C01:3.3' }],
+  })
+  assert.deepEqual([...s.slack.seen].sort(), ['C01:1.1', 'C01:2.2'])
+  assert.equal(s.slack.threads['T01/C01/1.1'].sessionId, 'mine') // the newer one wins
+  assert.equal(s.slack.threads['T01/C01/2.2'].sessionId, 'theirs')
+  assert.deepEqual(s.slack.deferred, [{ id: 'C01:3.3' }])
 })
 
 test('state: fields this build doesn’t know survive a load and save — a rollback never drops a newer build’s settings', async () => {

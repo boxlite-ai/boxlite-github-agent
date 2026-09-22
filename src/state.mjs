@@ -10,7 +10,29 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 
 const MAX_SEEN = 10_000 // comment ids to remember; older ones are far outside any re-read window
-const KNOWN = ['lastModified', 'seen', 'threads', 'usage', 'grants', 'paused', 'forks', 'codex', 'deploy']
+const SLACK_THREAD_TTL_MS = 90 * 86_400_000 // a Slack thread quiet this long is forgotten; its next mention starts afresh
+const KNOWN = ['lastModified', 'seen', 'threads', 'usage', 'grants', 'paused', 'forks', 'codex', 'deploy', 'slack']
+
+/** Slack's memory, apart from GitHub's (slack-channel.mjs): the ids of both could collide. */
+const slackPart = (raw = {}) => ({
+  seen: new Set(raw.seen ?? []), // "C…:<ts>" messages handled
+  threads: raw.threads ?? {}, // "T…/C…/<thread ts>" → { sessionId, lastTs, lastUsed }
+  usage: raw.usage ?? {}, // Slack user id → { day: 'YYYY-MM-DD', count }
+  deferred: raw.deferred ?? [], // requests accepted by a controller that was shutting down
+})
+
+/**
+ * The memory of the Slack agent this bot took over (its state.json, handed over at the switch):
+ * its threads carry on here — same volume, same context keys — and what it handled isn't redone.
+ */
+export function importSlackState(state, raw) {
+  for (const id of raw.seen ?? []) state.slack.seen.add(id)
+  for (const [key, t] of Object.entries(raw.threads ?? {})) {
+    const ours = state.slack.threads[key]
+    if (!ours || Date.parse(t.lastUsed) > Date.parse(ours.lastUsed)) state.slack.threads[key] = t
+  }
+  for (const req of raw.deferred ?? []) if (!state.slack.deferred.some((d) => d.id === req.id)) state.slack.deferred.push(req)
+}
 
 export async function loadState(file) {
   let raw = {}
@@ -31,14 +53,19 @@ export async function loadState(file) {
     forks: raw.forks ?? {}, // "owner/repo" (lower case) → the bot's fork, "bot/repo"
     codex: raw.codex ?? null, // { model, effort, by, at } from an admin's /model
     deploy: raw.deploy ?? null, // { from, to, by, at, reply } while an admin's /deploy waits for the new build
+    slack: slackPart(raw.slack),
   }
 }
 
-export async function saveState(file, state) {
+export async function saveState(file, state, now = Date.now()) {
   const seen = [...state.seen].slice(-MAX_SEEN)
   state.seen = new Set(seen)
+  const s = state.slack
+  s.seen = new Set([...s.seen].slice(-MAX_SEEN))
+  for (const [key, t] of Object.entries(s.threads)) if (now - Date.parse(t.lastUsed) > SLACK_THREAD_TTL_MS) delete s.threads[key]
+  const slack = { seen: [...s.seen], threads: s.threads, usage: s.usage, deferred: s.deferred }
   const { lastModified, threads, usage, grants, paused, forks, codex, deploy } = state
-  const data = JSON.stringify({ ...state.unknown, lastModified, seen, threads, usage, grants, paused, forks, codex, deploy })
+  const data = JSON.stringify({ ...state.unknown, lastModified, seen, threads, usage, grants, paused, forks, codex, deploy, slack })
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, data, { mode: 0o600 })
