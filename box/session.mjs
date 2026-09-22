@@ -11,6 +11,11 @@
 // Codex runs logged in to ChatGPT with a stand-in login: auth.json holds this job's token (from
 // the controller, useless once the job ends), never the bot's real ChatGPT login — the controller
 // proxy swaps that in. It is rewritten every turn and never snapshotted.
+//
+// A write turn (PUSH_REF set) starts from the commit the controller chose (BASE_SHA, fetched
+// anonymously from BASE_URL) on a local `botlite` branch; whatever Codex commits is pushed after
+// it exits, with the same job token, to the controller (PUSH_URL), which lets exactly PUSH_REF
+// through. Nothing here is a check — Codex could rewrite this runner — the controller checks.
 import { spawn, execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -25,8 +30,9 @@ const CTX = E.CTX || '/ctx'
 const REPO_DIR = path.join(CTX, 'repo')
 const KEY = Buffer.from(E.CONTEXT_KEY || '', 'base64')
 
-const sh = (cmd, args, { cwd = CTX, input } = {}) =>
-  execFileSync(cmd, args, { cwd, input, maxBuffer: 512 * 1024 * 1024, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...E, GIT_TERMINAL_PROMPT: '0' } })
+const sh = (cmd, args, { cwd = CTX, input, env } = {}) =>
+  execFileSync(cmd, args, { cwd, input, maxBuffer: 512 * 1024 * 1024, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...E, GIT_TERMINAL_PROMPT: '0', ...env } })
+const git = (...args) => sh('git', args, { cwd: REPO_DIR }).toString().trim()
 
 const seal = (plain) => {
   const iv = randomBytes(12)
@@ -92,6 +98,29 @@ function checkout() {
   sh('git', ['checkout', '--quiet', '--force', '--detach', 'refs/botlite/pr'], { cwd: REPO_DIR })
 }
 
+/** A write turn starts clean from the controller's base commit (a follow-up's is the bot's own branch). */
+function startFromBase() {
+  git('fetch', '--quiet', E.BASE_URL, E.BASE_SHA)
+  git('checkout', '--quiet', '--force', '-B', 'botlite', E.BASE_SHA)
+  git('clean', '-fdq')
+}
+
+/** What Codex committed on top of the base goes to the controller; it decides what happens next. */
+function pushCommits() {
+  try {
+    const head = git('rev-parse', 'HEAD')
+    const uncommitted = git('status', '--porcelain', '--untracked-files=no') !== ''
+    if (head === E.BASE_SHA) return { pushed: null, uncommitted }
+    sh('git', ['push', '--quiet', '--force', '--no-verify', E.PUSH_URL, `HEAD:${E.PUSH_REF}`], {
+      cwd: REPO_DIR,
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: `Authorization: Bearer ${E.BOTLITE_JOB_TOKEN}` },
+    })
+    return { pushed: head, uncommitted }
+  } catch (e) {
+    return { pushed: null, error: String(e.stderr || e.message).trim().slice(-300) }
+  }
+}
+
 function codex(args, prompt) {
   return new Promise((resolve) => {
     const child = spawn('codex', args, {
@@ -104,6 +133,9 @@ function codex(args, prompt) {
         CODEX_HOME: path.join(CTX, 'codex'),
         CI: '1',
         NO_COLOR: '1',
+        GIT_TERMINAL_PROMPT: '0',
+        // Commits need an author; the controller replaces them with one commit by the bot anyway.
+        ...Object.fromEntries(['AUTHOR', 'COMMITTER'].flatMap((w) => [[`GIT_${w}_NAME`, 'botlite'], [`GIT_${w}_EMAIL`, 'botlite@users.noreply.github.com']])),
       },
     })
     child.stdout.pipe(process.stdout, { end: false }) // JSONL straight to the controller
@@ -137,12 +169,14 @@ async function main() {
     writeAuth()
     ensureCodex(E.CODEX_VERSION)
     checkout()
+    if (E.PUSH_REF) startFromBase()
     Object.assign(result, await codex(JSON.parse(E.BOTLITE_ARGS), prompt))
     try {
       result.lastMessage = readFileSync(path.join(CTX, 'last-message.md'), 'utf8')
     } catch {
       /* the turn produced no final message */
     }
+    if (E.PUSH_REF) result.push = pushCommits()
   } catch (e) {
     Object.assign(result, { code: 1, setupError: String(e.stderr || e.message || e).slice(-800) })
   }

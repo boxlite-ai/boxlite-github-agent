@@ -16,6 +16,13 @@ export function mentions(body, login) {
 }
 
 /**
+ * What access.mjs needs about the author of an issue, PR or comment: their relation to the repo
+ * (OWNER / MEMBER / COLLABORATOR count as maintainers) and whether the text was edited since it
+ * was posted — people with write access can edit anyone's comment, so an edited one isn't proof.
+ */
+export const standing = (c) => ({ association: c.author_association ?? 'NONE', edited: Boolean(c.updated_at && c.created_at && c.updated_at !== c.created_at) })
+
+/**
  * Unread notifications for threads the bot is in. `lastModified` makes an unchanged poll a
  * free 304; a full page means more may be waiting, so we page through before relying on it.
  * @returns {{ notifications: object[], lastModified: string|null, interval: number }}
@@ -57,14 +64,14 @@ export async function requestsFrom(gh, n, { login, seen, now = Date.now() }) {
   if (Date.parse(issue.created_at) >= Date.parse(since)) {
     // Only a freshly opened issue/PR's body counts — a new comment on an old thread must not
     // re-trigger a stale @botlite in its first post.
-    candidates.push({ id: `body:${repo}#${number}`, kind: 'body', body: issue.body, user: issue.user, createdAt: issue.created_at, url: issue.html_url })
+    candidates.push({ id: `body:${repo}#${number}`, kind: 'body', body: issue.body, user: issue.user, createdAt: issue.created_at, url: issue.html_url, ...standing(issue) })
   }
   for (const c of await gh.json('GET', `/repos/${repo}/issues/${number}/comments?since=${since}&per_page=100`)) {
-    candidates.push({ id: `ic:${c.id}`, kind: 'comment', commentId: c.id, body: c.body, user: c.user, createdAt: c.created_at, url: c.html_url })
+    candidates.push({ id: `ic:${c.id}`, kind: 'comment', commentId: c.id, body: c.body, user: c.user, createdAt: c.created_at, url: c.html_url, ...standing(c) })
   }
   if (isPR) {
     for (const c of await gh.json('GET', `/repos/${repo}/pulls/${number}/comments?since=${since}&per_page=100`)) {
-      candidates.push({ id: `rc:${c.id}`, kind: 'review_comment', commentId: c.id, body: c.body, user: c.user, createdAt: c.created_at, url: c.html_url, path: c.path, line: c.line ?? c.original_line })
+      candidates.push({ id: `rc:${c.id}`, kind: 'review_comment', commentId: c.id, body: c.body, user: c.user, createdAt: c.created_at, url: c.html_url, path: c.path, line: c.line ?? c.original_line, ...standing(c) })
     }
   }
 
@@ -76,6 +83,7 @@ export async function requestsFrom(gh, n, { login, seen, now = Date.now() }) {
     .map((c) => ({
       ...c,
       author: c.user.login,
+      userId: c.user.id,
       repo,
       number,
       isPR,

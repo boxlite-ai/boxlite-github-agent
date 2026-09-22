@@ -13,9 +13,10 @@ export function react(gh, req, content = 'eyes') {
   return gh.json('POST', path, { body: { content } })
 }
 
-export function reply(gh, req, text) {
+/** `footer: false` for the controller's own replies (commands), where nothing ran in a box. */
+export function reply(gh, req, text, { footer = true } = {}) {
   const t = String(text || '').trim() || '(no answer)'
-  const body = (t.length > MAX_BODY ? `${t.slice(0, MAX_BODY)}\n\n…(truncated)` : t) + FOOTER
+  const body = (t.length > MAX_BODY ? `${t.slice(0, MAX_BODY)}\n\n…(truncated)` : t) + (footer ? FOOTER : '')
   return req.kind === 'review_comment'
     ? gh.json('POST', `/repos/${req.repo}/pulls/${req.number}/comments/${req.commentId}/replies`, { body: { body } })
     : gh.json('POST', `/repos/${req.repo}/issues/${req.number}/comments`, { body: { body } })

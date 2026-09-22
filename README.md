@@ -1,19 +1,21 @@
 # BoxLite GitHub Agent — `@boxliteai`
 
 Mention **@boxliteai** in any public GitHub issue or pull request and it answers in the thread.
-There's nothing to install: it's a regular GitHub account. Each request runs
-[Codex CLI](https://github.com/openai/codex) in that thread's own [BoxLite](https://boxlite.ai)
-microVM, with a full shell and network, so it can run the code before it answers.
+For the repo's maintainers it can also open a draft PR. There's nothing to install: it's a
+regular GitHub account. Each request runs [Codex CLI](https://github.com/openai/codex) in that
+thread's own [BoxLite](https://boxlite.ai) microVM, with a full shell and network, so it can run
+the code before it answers.
 
 ```
 @boxliteai why does `npm test` fail on this PR?
 @boxliteai review this change
-@boxliteai how would I add retries to the client in src/http.ts?
+@boxliteai add retries to the client in src/http.ts and open a PR
+@boxliteai /help
 ```
 
 ## How it works
 
-![GitHub mentions reach the controller box by polling or App push. The controller holds every real credential, calls chatgpt.com with the real login, and runs one session box per issue or PR. Session boxes hold no credentials, reach the model only through the controller, and keep their context on a shared volume.](docs/architecture.svg)
+![GitHub mentions reach the controller box by polling or App push. The controller holds every real credential, calls chatgpt.com with the real login, and runs one session box per issue or PR. Session boxes hold no credentials, reach the model (and, on a write turn, one staging branch of the bot's fork) only through the controller, and keep their context on a shared volume.](docs/architecture.svg)
 
 - **One box and one Codex session per issue or PR.** Follow-ups resume the session. A PR's
   checkout follows its latest head.
@@ -21,6 +23,8 @@ microVM, with a full shell and network, so it can run the code before it answers
   search. The microVM is the boundary, and nothing worth stealing is ever inside it.
 - **Only the controller holds credentials.** Codex runs on a stand-in login whose token works only
   on the controller's proxy, and only until the turn ends.
+- **PRs only for people who may ask.** Codex commits in its box; the controller checks the change
+  and opens the PR. Everyone else gets the change as a diff in the reply.
 
 ### One mention, start to finish
 
@@ -39,19 +43,49 @@ thread and written to `sessions/<owner>/<repo>/<n>/` on the volume. Every box mo
 volume, but only that thread's box gets the key. Stopped boxes are deleted after `BOX_TTL_DAYS`; the
 next mention restores into a new one.
 
+### Opening a PR
+
+![Opening a PR: an admin, a maintainer or someone an admin added asks. The controller runs the turn on the commit the change builds on. Codex commits in its box; the runner pushes with its job token to the controller, which lets one staging branch through to the bot's fork with an App token the box never sees. After the turn the controller stops the box, revokes the tokens, checks that exact commit on GitHub's own diff, squashes it into one commit by the bot, and opens a draft PR.](docs/pr.svg)
+
+- **Who may ask:** the bot's admins (`BOT_ADMINS`) anywhere; a repo's maintainers (owner, member,
+  collaborator) there; and anyone an admin added to a repo with `/add`.
+- **What's checked,** on GitHub's diff of the exact commit pushed: on top of the base, at most 100
+  files and 5,000 lines, no file over 1 MiB, no symlinks or submodules, and nothing under
+  `.github/workflows`, `.github/actions`, `CODEOWNERS`, `.gitmodules` or `FUNDING.yml`.
+  Dependency and lockfile changes pass, but are called out at the top of the PR.
+- **What's published:** one commit by the bot on `botlite/<owner>/<repo>/<n>` in its fork, as a
+  draft PR into the default branch. For someone else's PR, the draft PR goes into that PR's branch;
+  on a PR the bot opened, the commit goes straight onto its branch. A follow-up adds a commit, and a
+  branch that moved meanwhile is never overwritten.
+
+### Commands
+
+| Command | Who | Does |
+|---|---|---|
+| `@boxliteai /help` (or just `@boxliteai help`) | anyone | the commands, and whether you can ask for PRs here |
+| `@boxliteai /add @user` · `/remove @user` | admins | who else can ask for PRs in this repo |
+| `@boxliteai /list` | admins | who has been added here |
+| `@boxliteai /pause` · `/resume` | admins | stop or restart all PR writing |
+
+The controller answers these itself; Codex never sees them. Admin commands count only in a new,
+never-edited comment, because anyone with write access to a repo can edit other people's comments
+there. People are kept by GitHub id, since a login can change hands.
+
 ## Who holds what
 
 | Credential | Controller | Session box | Volume |
 |---|---|---|---|
-| Bot's GitHub token | holds: polls, reacts, replies | never (clones anonymously) | never |
+| Bot's GitHub token | holds: polls, reacts, replies, forks, opens PRs | never (clones anonymously) | never |
+| Push App key | holds: one token per write turn, for that fork only | never (pushes via the controller) | never |
 | BoxLite API key | placeholder (a BoxLite secret) | never | never |
 | ChatGPT login | holds and refreshes | never (a stand-in login) | never |
-| Job token | issues, revokes | its own turn only | never |
+| Job token | issues, revokes | its own turn only: model calls, and a write turn's one push | never |
 | Thread context key | derives | its own thread only | never (sealed bytes only) |
 | Webhook secret | holds | never | never |
 
-The proxy forwards only Codex's two model endpoints, 404s everything else, and caps requests per
-turn. Text from GitHub goes into the prompt fenced as untrusted context, never as instructions.
+The proxy forwards only Codex's two model endpoints and a write turn's push to its one staging
+branch, 404s everything else, and caps requests per turn. Text from GitHub goes into the prompt
+fenced as untrusted context, never as instructions.
 
 ## Code map
 
@@ -63,40 +97,52 @@ turn. Text from GitHub goes into the prompt fenced as untrusted context, never a
 | `src/session.mjs` | controller | one turn: start or create the box, exec the runner attached, stop it |
 | `src/proxy.mjs` · `chatgpt.mjs` | controller | the public port: model endpoints only, job token → real login |
 | `src/codex.mjs` | controller | `codex exec` / `resume` arguments, prompts, event parsing |
+| `src/access.mjs` | controller | who may publish; `/help` and the admin commands |
+| `src/gitpush.mjs` · `githubapp.mjs` | controller | a write turn's one push: job token in, App token out, one ref |
+| `src/publish.mjs` | controller | plan a write turn; check the pushed commit, squash it, draft PR |
 | `src/boxlite.mjs` | controller | BoxLite REST, exec attach over WebSocket |
 | `src/github.mjs` · `reply.mjs` | controller | GitHub REST as the bot: 👀 and replies |
-| `box/session.mjs` | session box | restore → stand-in login → checkout → Codex → seal |
+| `box/session.mjs` | session box | restore → stand-in login → checkout → Codex → push commits → seal |
 | `deploy/deploy.sh` · `ctl.mjs` | your terminal | create the controller; operate it |
 
 ## Run your own
 
 ```bash
 export BOXLITE_API_KEY=blk_live_…
-bash deploy/deploy.sh                                 # creates the public botlite-controller box
+BOT_ADMINS=you bash deploy/deploy.sh                  # creates the public botlite-controller box
 GITHUB_TOKEN=ghp_… node deploy/ctl.mjs github-token   # the bot account's classic PAT
+GITHUB_APP_ID=… GITHUB_APP_KEY=app.pem node deploy/ctl.mjs github-app   # optional: PR writing
 node deploy/ctl.mjs status                            # what it's waiting for, e.g. the ChatGPT login
 ```
 
 - **BoxLite key:** it must be able to create boxes. If it can't create volumes, create
   `botlite-context` in the dashboard first.
 - **GitHub token:** a *classic* PAT on the bot's own account with `notifications` + `public_repo`
-  (the notifications API rejects fine-grained tokens). The bot is whoever the token belongs to.
+  (the notifications API rejects fine-grained tokens). Not `repo`, which reaches private repos:
+  the deploy refuses it. The bot is whoever the token belongs to.
+- **Push App (PR writing):** a GitHub App of its own, separate from the webhook App. Give it
+  *Repository permissions → Contents: Read and write* and nothing else, with no webhook. Install it
+  on the bot's account for *all repositories*, so new forks are covered, generate a private key,
+  and hand both over with `ctl github-app`. Without it the bot only answers. The controller mints
+  one token per write turn for that turn's fork, and the box never sees it.
 - **ChatGPT login:** the controller runs `codex login --device-auth` in its box, and `status` shows
   the link and code to approve with the bot's ChatGPT account. Use an account only the bot uses.
 - **`CONTEXT_SECRET`** seals contexts and signs job tokens. It's generated on first start. Pass the
   same value to a redeploy (`CONTEXT_SECRET=… bash deploy/deploy.sh`) to keep every thread's context.
 
-Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart`. `restart` pulls the
-tracked branch and lets running turns finish first.
+Day to day: `node deploy/ctl.mjs status | logs [n] | webhook | restart | admins <logins>`.
+`restart` pulls the tracked branch and lets running turns finish first; `admins` replaces
+`BOT_ADMINS` and restarts, with no redeploy.
 
 <details>
 <summary>Settings</summary>
 
-The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `CODEX_MODEL` and
-`BOTLITE_REF` through.
+The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `CODEX_MODEL`,
+`BOTLITE_REF` and `BOT_ADMINS` through.
 
 | Env | Default | |
 |---|---|---|
+| `BOT_ADMINS` | none | GitHub logins, comma-separated, who may ask for PRs anywhere and run the admin commands (`ctl admins` replaces it) |
 | `VOLUME` | `botlite-context` | the shared context volume |
 | `CODEX_MODEL` | Codex's default | model for every turn (also pinned by the proxy) |
 | `BOTLITE_REF` | `main` | the branch the controller runs |
@@ -127,8 +173,11 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn through the proxy (needs codex 0.
 
 ## Limits
 
-- **Public repos, answers only.** It replies and proposes diffs; it doesn't push commits or open
-  PRs.
+- **Public repos only, and PRs only on request.** It opens draft PRs from its own fork, only for
+  the people above, and never pushes to anyone else's branch.
+- **Forks that fall behind.** Before a push the controller syncs the fork with upstream. If
+  upstream changed a workflow file since the last sync, GitHub may refuse that sync unless the bot's
+  PAT also has the `workflow` scope; the turn then says the push failed.
 - **A personal ChatGPT plan serves everyone.** OpenAI's terms may not allow a consumer login to be
   used this way; an API key is the sanctioned route for a public service.
 - **Codex's private backend.** The model path depends on ChatGPT's Codex backend and Codex's login

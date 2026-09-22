@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="632" viewBox="0 0 760 632" role="img" aria-labelledby="t">
+  <title id="t">Opening a PR: an admin, a maintainer or someone an admin added asks. The controller runs the turn on the commit the change builds on. Codex commits in its box; the runner pushes with its job token to the controller, which lets one staging branch through to the bot's fork with an App token the box never sees. After the turn the controller stops the box, revokes the tokens, checks that exact commit on GitHub's own diff, squashes it into one commit by the bot, and opens a draft PR.</title>
+  <style>
+    :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #151b23; --frame: #3d444d; --ink: #f0f6fc; --muted: #9198a1; --rule: #3d444d; --rule-strong: #656c76; --bubble: #0d1117; --blue: #4493f8; --blue-soft: #102a4c; --amber: #d29922; --amber-soft: #2e2410; --green: #3fb950; }
+    }
+    text { fill: var(--ink); font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; }
+    .small { font-size: 12px; }
+    .muted { fill: var(--muted); }
+    .blue { fill: var(--blue); font-weight: 600; }
+    .amber { fill: var(--amber); }
+    .frame { fill: var(--bg); stroke: var(--frame); }
+    .ext { fill: var(--bg); stroke: var(--rule-strong); stroke-width: 1.2; }
+    .trusted { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.6; }
+    .untrusted { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 1.6; stroke-dasharray: 6 4; }
+    .card { fill: var(--bg); stroke: var(--rule-strong); }
+    .bubble { fill: var(--bubble); stroke: var(--rule); }
+    .life { stroke: var(--rule-strong); stroke-dasharray: 3 4; }
+    .edge { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+    .back { stroke: var(--ink); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; opacity: 0.8; }
+    .secret { stroke: var(--blue); stroke-width: 1.6; fill: none; }
+    .token { stroke: var(--amber); stroke-width: 1.6; fill: none; stroke-dasharray: 6 4; }
+    .ah { fill: var(--ink); }
+    .ah-blue { fill: var(--blue); }
+    .ah-amber { fill: var(--amber); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-blue" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah-amber" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="frame" x="0.5" y="0.5" width="759" height="631" rx="12"/>
+
+  <!-- lanes -->
+  <rect class="ext" x="12" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="80" y="39" text-anchor="middle">GitHub repo</text>
+  <rect class="trusted" x="212" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="280" y="39" text-anchor="middle">controller</text>
+  <rect class="untrusted" x="412" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="480" y="39" text-anchor="middle">session box</text>
+  <rect class="ext" x="612" y="16" width="136" height="36" rx="8"/>
+  <text class="title" x="680" y="39" text-anchor="middle">bot's fork</text>
+  <line class="life" x1="80" y1="52" x2="80" y2="620"/>
+  <line class="life" x1="280" y1="52" x2="280" y2="620"/>
+  <line class="life" x1="480" y1="52" x2="480" y2="620"/>
+  <line class="life" x1="680" y1="52" x2="680" y2="620"/>
+
+  <!-- 1 the ask -->
+  <rect class="bubble" x="14" y="70" width="132" height="44" rx="7"/>
+  <text class="small" x="80" y="88" text-anchor="middle">@boxliteai fix it</text>
+  <text class="small" x="80" y="104" text-anchor="middle">and open a PR</text>
+
+  <!-- 2 may it publish? -->
+  <line class="edge" x1="80" y1="150" x2="278" y2="150" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="142" text-anchor="middle">may this ask publish?</text>
+  <text class="small muted" x="180" y="166" text-anchor="middle">admin · maintainer · /add</text>
+
+  <!-- 3 exec on the base -->
+  <line class="edge" x1="280" y1="206" x2="478" y2="206" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="198" text-anchor="middle">exec runner</text>
+  <text class="small muted" x="380" y="222" text-anchor="middle">on the base commit</text>
+
+  <!-- 4 codex commits -->
+  <rect class="card" x="392" y="242" width="176" height="34" rx="7"/>
+  <text x="480" y="264" text-anchor="middle">codex · git commit</text>
+
+  <!-- 5 the one push, through the controller -->
+  <line class="token" x1="480" y1="312" x2="282" y2="312" marker-end="url(#ah-amber)"/>
+  <text class="small amber" x="380" y="304" text-anchor="middle">git push + job token</text>
+  <text class="small muted" x="380" y="328" text-anchor="middle">one staging ref, or 403</text>
+  <line class="secret" x1="280" y1="356" x2="678" y2="356" marker-end="url(#ah-blue)"/>
+  <text class="small blue" x="580" y="348" text-anchor="middle">+ App token</text>
+  <text class="small muted" x="580" y="372" text-anchor="middle">fork made on 1st push</text>
+
+  <!-- 6 turn over -->
+  <line class="edge" x1="280" y1="408" x2="478" y2="408" marker-end="url(#ah)"/>
+  <text class="small" x="380" y="400" text-anchor="middle">stop box</text>
+  <text class="small muted" x="380" y="424" text-anchor="middle">tokens revoked</text>
+
+  <!-- 7 check the pushed commit -->
+  <line class="back" x1="680" y1="460" x2="282" y2="460" marker-end="url(#ah)"/>
+  <text class="small" x="580" y="452" text-anchor="middle">GitHub's own diff</text>
+  <rect class="card" x="196" y="480" width="168" height="34" rx="7"/>
+  <text x="280" y="502" text-anchor="middle">check · squash</text>
+
+  <!-- 8 publish -->
+  <line class="edge" x1="280" y1="548" x2="678" y2="548" marker-end="url(#ah)"/>
+  <text class="small" x="580" y="540" text-anchor="middle">1 commit by the bot</text>
+  <text class="small muted" x="580" y="564" text-anchor="middle">fast-forward only</text>
+  <line class="edge" x1="280" y1="598" x2="82" y2="598" marker-end="url(#ah)"/>
+  <text class="small" x="180" y="590" text-anchor="middle">draft PR + reply</text>
+</svg>

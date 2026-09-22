@@ -85,3 +85,20 @@ test('followUpPrompt: only the new request, and a note when the PR head moved', 
   assert.match(moved, /new commits since your last reply — the checkout now points at abcdef1/)
   assert.match(moved, /Request from @dave/)
 })
+
+test('prompts: every turn says whether it may publish — a follow-up can come from someone who may not', () => {
+  const write = { allowed: true, describe: 'as a new draft PR into main', base: 'feedbead'.repeat(5) }
+  for (const p of [newSessionPrompt({ login: 'botlite', req, pr, write }), followUpPrompt({ login: 'botlite', req, pr, headMoved: true, write })]) {
+    assert.match(p, /This request may publish changes\. The checkout is on a local branch, `botlite`, at the commit a change builds on \(feedbea\)/)
+    assert.match(p, /commit it there with `git commit`/)
+    assert.match(p, /Don't push — after you finish, your commits are checked and published as a new draft PR into main, as one commit by @botlite\./)
+    assert.match(p, /workflows, actions, CODEOWNERS, submodules, symlinks or funding links are refused/)
+    assert.doesNotMatch(p, /the checkout now points at/) // on a write turn the checkout is the base, not the PR head
+  }
+  const denied = { allowed: false, why: 'only maintainers of this repo and people an admin added can' }
+  for (const p of [newSessionPrompt({ login: 'botlite', req, pr, write: denied }), followUpPrompt({ login: 'botlite', req, pr, write: denied })]) {
+    assert.match(p, /You can't publish changes for this request \(@dave: only maintainers of this repo and people an admin added can\)\. If it asks for a PR, say so and give the change as a diff instead\./)
+    assert.doesNotMatch(p, /may publish/)
+  }
+  assert.match(newSessionPrompt({ login: 'botlite', req, pr }), /You can't publish changes for this request/) // no write info → no publishing
+})

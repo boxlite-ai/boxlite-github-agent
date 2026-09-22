@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="940" height="480" viewBox="0 0 940 480" role="img" aria-labelledby="t">
-  <title id="t">GitHub mentions reach the controller box by polling or App push. The controller holds every real credential, calls chatgpt.com with the real login, and runs one session box per issue or PR. Session boxes hold no credentials, reach the model only through the controller, and keep their context on a shared volume.</title>
+  <title id="t">GitHub mentions reach the controller box by polling or App push. The controller holds every real credential, calls chatgpt.com with the real login, and runs one session box per issue or PR. Session boxes hold no credentials, reach the model (and, on a write turn, one staging branch of the bot's fork) only through the controller, and keep their context on a shared volume.</title>
   <style>
     :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
     @media (prefers-color-scheme: dark) {
@@ -52,10 +52,10 @@
   <text x="316" y="118"><tspan class="key">poller</tspan><tspan class="muted"> · notifications, every 60 s</tspan></text>
   <text x="316" y="146"><tspan class="key">webhook</tspan><tspan class="muted"> · App repos, ~1 s</tspan></text>
   <text x="316" y="174"><tspan class="key">scheduler</tspan><tspan class="muted"> · 1 per thread, 3 at once</tspan></text>
-  <text x="316" y="202"><tspan class="key">model proxy</tspan><tspan class="muted"> · job token → real login</tspan></text>
+  <text x="316" y="202"><tspan class="key">proxy</tspan><tspan class="muted"> · model calls, one git push</tspan></text>
   <line class="hair" x1="316" y1="220" x2="616" y2="220"/>
-  <text class="small" x="316" y="244">keeps: bot GitHub token · BoxLite key</text>
-  <text class="small" x="316" y="262">ChatGPT device login (refreshed here)</text>
+  <text class="small" x="316" y="244">keeps: bot GitHub token · push App key</text>
+  <text class="small" x="316" y="262">ChatGPT device login · BoxLite key</text>
 
   <!-- chatgpt.com -->
   <rect class="ext" x="748" y="108" width="176" height="84" rx="10"/>
@@ -90,6 +90,7 @@
   <text class="small" x="246" y="152" text-anchor="middle">push ~1 s</text>
   <line class="edge" x1="296" y1="206" x2="198" y2="206" marker-end="url(#ah)"/>
   <text class="small" x="246" y="198" text-anchor="middle">👀 + reply</text>
+  <text class="small muted" x="246" y="224" text-anchor="middle">+ draft PRs</text>
 
   <!-- controller → chatgpt.com -->
   <line class="secret" x1="636" y1="150" x2="746" y2="150" marker-end="url(#ah-blue)"/>
@@ -100,7 +101,7 @@
   <text class="small" x="410" y="302" text-anchor="end">exec runner, attached</text>
   <text class="small muted" x="410" y="318" text-anchor="end">prompt in · events out</text>
   <line class="token" x1="540" y1="340" x2="540" y2="278" marker-end="url(#ah-amber)"/>
-  <text class="small amber" x="550" y="302">model calls</text>
+  <text class="small amber" x="550" y="302">model calls · git push</text>
   <text class="small muted" x="550" y="318">+ per-job token</text>
 
   <!-- session boxes ⇄ volume -->

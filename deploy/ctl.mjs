@@ -11,6 +11,11 @@
 //                                     hand over the bot's classic PAT: streamed on the exec
 //                                     connection's stdin into the controller's disk (0600) —
 //                                     never in any argv, box env or exec record
+//   GITHUB_APP_ID=… GITHUB_APP_KEY=app.pem node deploy/ctl.mjs github-app
+//                                     hand over the push App (App ID + private key file) the
+//                                     same way; PR writing starts with the next write turn
+//   node deploy/ctl.mjs admins you,… set the bot's admins (replaces BOT_ADMINS) and restart
+import { readFileSync } from 'node:fs'
 import { boxlite } from '../src/boxlite.mjs'
 
 const NAME = 'botlite-controller'
@@ -55,7 +60,24 @@ if (cmd === 'status') {
   }
   const r = await sh('umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/github-token && echo stored', `${process.env.GITHUB_TOKEN}\n`)
   console.log(r.code === 0 ? 'handed to the controller — it starts polling within 30 s' : `failed: ${r.out}`)
+} else if (cmd === 'github-app') {
+  const { GITHUB_APP_ID: appId, GITHUB_APP_KEY: keyFile } = process.env
+  if (!appId || !keyFile) {
+    console.error('set GITHUB_APP_ID (the push App’s ID) and GITHUB_APP_KEY (its private key .pem file)')
+    process.exit(2)
+  }
+  const privateKey = readFileSync(keyFile, 'utf8')
+  const r = await sh('umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/github-app.json && echo stored', JSON.stringify({ appId, privateKey }))
+  console.log(r.code === 0 ? 'handed to the controller — PR writing starts with the next write turn' : `failed: ${r.out}`)
+} else if (cmd === 'admins') {
+  const logins = process.argv.slice(3).join(',').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean)
+  if (!logins.length || !logins.every((l) => /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(l))) {
+    console.error('usage: node deploy/ctl.mjs admins <github login>[,<login>…]')
+    process.exit(2)
+  }
+  const r = await sh("umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/bot-admins && pkill -f 'botlite/src/mai[n].mjs' && echo restarting", `${logins.join(',')}\n`)
+  console.log(r.code === 0 ? `admins: ${logins.map((l) => `@${l}`).join(' ')} — the controller restarts to apply them` : `failed: ${r.out}`)
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins')
   process.exit(2)
 }

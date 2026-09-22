@@ -67,7 +67,7 @@ test('runTurn: runs the in-box runner attached, answers from the last message, s
     },
   })
   const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, pr: { headSha: 'abc', baseRef: 'main' }, prompt: 'PROMPT', ...via })
-  assert.deepEqual(out, { sessionId: 'th-1', message: 'Final answer.', error: null, sessionLost: false })
+  assert.deepEqual(out, { sessionId: 'th-1', message: 'Final answer.', error: null, sessionLost: false, push: null })
 
   const [, boxId, exec] = bl.calls.find((c) => c[0] === 'startExec')
   assert.equal(boxId, 'box-1')
@@ -79,7 +79,19 @@ test('runTurn: runs the in-box runner attached, answers from the last message, s
   assert.equal(JSON.parse(exec.env.BOTLITE_ARGS)[0], 'exec')
   assert.ok(JSON.parse(exec.env.BOTLITE_ARGS).some((a) => a.includes('https://8788-d-abc.proxy.boxlite.ai/backend-api/codex')))
   assert.equal(exec.env.BOTLITE_JOB_TOKEN, 'job.token.sig')
+  assert.equal('PUSH_REF' in exec.env, false) // not a write turn: nothing to push, nowhere to push it
   assert.ok(bl.calls.some((c) => c[0] === 'stopBox' && c[1] === 'box-1'))
+})
+
+test('runTurn: a write turn starts on its base and pushes to its staging ref via the controller; the push report comes back', async () => {
+  const push = { pushed: 'abc123', uncommitted: false }
+  const bl = fakeBoxlite({ getBox: async () => ({ id: 'box-1', status: 'running' }), attach: async (id, e, { onStdout }) => (onStdout(Buffer.from(lines({ type: 'botlite.result', code: 0, lastMessage: 'done', push }))), 0) })
+  const write = { base: 'b'.repeat(40), baseUrl: 'https://github.com/botlite/app.git', staging: 'botlite-staging/acme/app/7' }
+  const out = await runTurn({ bl, cfg, key: 'acme/app#7', req, prompt: 'P', write, ...via })
+  assert.deepEqual(out.push, push)
+  const [, , exec] = bl.calls.find((c) => c[0] === 'startExec')
+  assert.deepEqual([exec.env.BASE_SHA, exec.env.BASE_URL, exec.env.PUSH_URL, exec.env.PUSH_REF], ['b'.repeat(40), 'https://github.com/botlite/app.git', 'https://8788-d-abc.proxy.boxlite.ai/git', 'refs/heads/botlite-staging/acme/app/7'])
+  assert.equal(Object.values(exec.env).some((v) => /ghs_|ghp_/.test(v)), false) // no GitHub token of any kind
 })
 
 test('runTurn: stops the box even when the attach fails', async () => {

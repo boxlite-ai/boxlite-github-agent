@@ -22,6 +22,8 @@
 # The bot's handle is whoever GITHUB_TOKEN belongs to (BOT_LOGIN only names who you expect).
 # Optional: BOT_LOGIN (boxliteai) VOLUME (botlite-context) CODEX_MODEL BOTLITE_REF (main)
 #           BOXLITE_URL (https://api.boxlite.ai)
+#           BOT_ADMINS  GitHub logins, comma-separated, who may ask for PRs anywhere and run the
+#                       admin commands; PR writing also needs the push App (ctl github-app)
 set -euo pipefail
 
 API="${BOXLITE_URL:-https://api.boxlite.ai}"
@@ -66,8 +68,10 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   login=$(body "$res" | jq -r .login)
   scopes=$(grep -i '^x-oauth-scopes:' "$HDRS" | cut -d: -f2- | tr -d '\r' || true)
   [ "$(tr '[:upper:]' '[:lower:]' <<<"$login")" = "$(tr '[:upper:]' '[:lower:]' <<<"$BOT")" ] || echo "  ⚠ token belongs to @$login, not @$BOT — mentions of @$BOT won't reach it"
-  grep -Eq '(^|[ ,])(notifications|repo)(,|$)' <<<"$scopes" || die "token lacks the notifications scope (has:$scopes) — use a classic PAT"
-  grep -Eq '(^|[ ,])(public_repo|repo)(,|$)' <<<"$scopes" || die "token lacks the public_repo scope (has:$scopes)"
+  # The bot opens PRs with this token, so no reach beyond public repos (`repo` covers private ones).
+  grep -Eq '(^|[ ,])(repo|delete_repo)(,|$)' <<<"$scopes" && die "token has more scopes than the bot should hold (has:$scopes) — use a classic PAT with notifications + public_repo"
+  grep -Eq '(^|[ ,])notifications(,|$)' <<<"$scopes" || die "token lacks the notifications scope (has:$scopes) — use a classic PAT"
+  grep -Eq '(^|[ ,])public_repo(,|$)' <<<"$scopes" || die "token lacks the public_repo scope (has:$scopes)"
   echo "  @$login ·$scopes"
 else
   echo "  not given — the controller will wait for it (GITHUB_TOKEN=… node deploy/ctl.mjs github-token)"
@@ -123,7 +127,7 @@ done'
 
 # Public inbound: session boxes reach the controller's model proxy over its preview URL (every
 # request needs a live job token; everything else there is a 404).
-jq -n --arg name "$NAME" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${CODEX_MODEL:-}" \
+jq -n --arg name "$NAME" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${CODEX_MODEL:-}" --arg admins "${BOT_ADMINS:-}" \
   --arg account "$CHATGPT_ACCOUNT_ID" --arg refreshed "$CHATGPT_LAST_REFRESH" --arg port "$PORT" --arg boot "$BOOT" '{
     name: $name, image: "node", cpus: 1, memory_mib: 2048,
     network: {outbound: {mode: "enabled"}, inbound: {mode: "enabled"}},
@@ -132,7 +136,8 @@ jq -n --arg name "$NAME" --arg volume "$VOLUME" --arg ref "$REF" --arg model "${
           + (if $ENV.CONTEXT_SECRET then {CONTEXT_SECRET: $ENV.CONTEXT_SECRET} else {} end)
           + (if $account == "" then {} else {CHATGPT_ACCOUNT_ID: $account} end)
           + (if $refreshed == "" then {} else {CHATGPT_LAST_REFRESH: $refreshed} end)
-          + (if $model == "" then {} else {CODEX_MODEL: $model} end)),
+          + (if $model == "" then {} else {CODEX_MODEL: $model} end)
+          + (if $admins == "" then {} else {BOT_ADMINS: $admins} end)),
     secrets: [
       {name: "boxlite", value: $ENV.BOXLITE_API_KEY, hosts: ["api.boxlite.ai"]},
       (if $ENV.GITHUB_TOKEN then {name: "github", value: $ENV.GITHUB_TOKEN, hosts: ["api.github.com"]} else empty end),

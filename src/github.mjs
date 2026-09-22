@@ -23,7 +23,11 @@ export function github(token, { fetchImpl = fetch } = {}) {
   /** JSON call that throws with method + path + status on a non-2xx, so a failure names the operation. */
   async function json(method, path, opts) {
     const res = await request(method, path, opts)
-    if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${(await res.text()).slice(0, 300)}`)
+    if (!res.ok) {
+      const err = new Error(`${method} ${path}: ${res.status} ${(await res.text()).slice(0, 300)}`)
+      err.status = res.status
+      throw err
+    }
     return res.status === 204 || res.status === 205 ? null : res.json()
   }
 
