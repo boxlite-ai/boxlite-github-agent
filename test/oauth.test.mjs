@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { keyLogin, oauthLogin } from '../src/oauth.mjs'
@@ -112,6 +112,26 @@ test('oauthLogin: a failed refresh throws and keeps the login; a new login from 
   await l.load()
   assert.equal(await l.token(), 'at-1') // the new login's, fresh — no refresh needed
   assert.match(l.describe(), /link again by 2027-03-30/)
+})
+
+test('oauthLogin: unlinking (both files gone) drops the cached login on the next load — no restart needed', async () => {
+  const file = fileWith(linked())
+  const live = file.replace('.json', '.live.json')
+  const l = oauthLogin({ name: 'Notion', file, now: () => T0 })
+  assert.equal(await l.load(), true)
+  assert.equal(l.ready(), true)
+  rmSync(file) // ctl unlink: the handed file is gone (there is no live copy yet)
+  assert.equal(await l.load(), false) // dropped, though it was cached in memory
+  assert.equal(l.ready(), false)
+  // A refreshed copy (live) is dropped the same way, and only when BOTH are gone.
+  writeFileSync(file, JSON.stringify(linked()))
+  writeFileSync(live, JSON.stringify(linked({ refreshed_at: '2026-09-22T00:30:00.000Z' })))
+  const l2 = oauthLogin({ name: 'Notion', file, now: () => T0 })
+  assert.equal(await l2.load(), true)
+  rmSync(live)
+  assert.equal(await l2.load(), true) // handed file still there → kept
+  rmSync(file)
+  assert.equal(await l2.load(), false) // now both gone → dropped
 })
 
 test('oauthLogin: idle for a week, it counts as stale — the controller refreshes it before Notion drops it', async () => {

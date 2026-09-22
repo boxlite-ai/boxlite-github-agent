@@ -22,9 +22,9 @@
 //   Slack   optional: SLACK_BOT_TOKEN (xoxb-…) + SLACK_APP_TOKEN (xapp-…, Socket Mode), or their
 //           BOXLITE_SECRET_SLACK_BOT / _SLACK_APP placeholders, or <state dir>/slack-bot-token +
 //           slack-app-token (ctl slack-tokens) — no restart needed
-//   Tools   optional, each on once its login is in place: Linear LINEAR_API_KEY /
-//           BOXLITE_SECRET_LINEAR or <state dir>/linear-api-key (ctl linear-key); Notion and Google
-//           <state dir>/notion-oauth.json, google-oauth.json (ctl notion-login, google-login)
+//   Tools   optional and per person: each Slack user binds their OWN Linear / Notion / Google
+//           login with `ctl link <service> <their slack id>`, kept under <state dir>/user-logins/
+//           (src/userlogins.mjs). No shared bot login; none on GitHub.
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SLACK_VOLUME
 //   (botlite-slack-context), SESSION_IMAGE (node), SESSION_CPUS (2), SESSION_MEMORY_MIB (4096),
@@ -54,8 +54,8 @@ import { planWrite, planSlackWrite, publishWrite } from './publish.mjs'
 import { selfBuild, deployPlan, markGood, goodBuild, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS, TRIAL_TURN, trialTurnFailure } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
-import { toolBroker, enabledServices } from './tools.mjs'
-import { keyLogin, oauthLogin } from './oauth.mjs'
+import { toolBroker, SERVICES } from './tools.mjs'
+import { userLogins } from './userlogins.mjs'
 import { TOOLS, SLACK_PR_REPOS } from './policy.mjs'
 import { tally } from './slack-reply.mjs'
 import { slackChannel } from './slack-channel.mjs'
@@ -163,13 +163,14 @@ const webhook = webhookHandler({
 })
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
 const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn asking for its PR's push
-// The bot's own logins to the team's tools, each optional: a service is on while its login is in place.
-const logins = {
-  linear: keyLogin(async () => first('LINEAR_API_KEY', 'BOXLITE_SECRET_LINEAR') || (await readSecretFile('linear-api-key'))),
-  notion: oauthLogin({ name: 'Notion', file: path.join(stateDir, 'notion-oauth.json') }),
-  google: oauthLogin({ name: 'Google', file: path.join(stateDir, 'google-oauth.json') }),
-}
-const tools = toolBroker({ secret: jobSecret, jobs, logins, policy: TOOLS, log })
+// The team's tools. Each person uses their OWN login, bound with `ctl link` and kept per user
+// (userlogins.mjs), and only in a Slack DM — so the bot only ever reads what the asker can, and
+// there is no shared bot login for anyone to borrow. Each distinct login and how it's stored per
+// user: Linear is a key, the rest OAuth.
+const loginKinds = Object.fromEntries([...new Set(Object.values(SERVICES).map((s) => s.login))].map((n) => [n, n === 'linear' ? 'key' : 'oauth']))
+const userTools = userLogins({ dir: path.join(stateDir, 'user-logins'), kinds: loginKinds })
+const tools = toolBroker({ secret: jobSecret, jobs, policy: TOOLS, log }) // whose login a turn uses is set on its job
+
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
 const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
 /** The config one turn runs on: the deploy's, with the model and effort of the moment. */
@@ -316,13 +317,13 @@ async function recentComments(req) {
  * same token opens the team's tools for a turn that has them; `job` is its record (who asked, and
  * — from tools.mjs — what it changed).
  */
-async function turn(key, req, pr, prompt, sessionId, plan, services, job) {
+async function turn(key, req, pr, prompt, sessionId, plan, job) {
   job.push = plan ? { ref: `refs/heads/${plan.staging}`, open: () => plan.open() } : null
   const jobToken = jobs.issue(12 * 3_600_000, key, job)
   try {
     const run = turnCfg()
-    log(`${key}: turn in ${boxName(key)} on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}${services.length ? `, with ${services.map((s) => s.name).join(', ')}` : ''}`)
-    const out = await runTurn({ bl, cfg: run, key, req, pr, prompt, tools: services, sessionId, jobToken, proxyUrl, write: plan, log })
+    log(`${key}: turn in ${boxName(key)} on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}`)
+    const out = await runTurn({ bl, cfg: run, key, req, pr, prompt, tools: [], sessionId, jobToken, proxyUrl, write: plan, log })
     if (out.tooling?.error) log(`${key}: agent-tooling not installed/updated: ${out.tooling.error}`)
     else if (out.tooling) log(`${key}: agent-tooling ${out.tooling.version}`)
     return out
@@ -352,18 +353,17 @@ async function handle(req) {
     const known = state.threads[key]
     const { write, plan: planned } = await writeTurn(req, pr, key)
     plan = planned
-    // The team's tools on GitHub only for the bot's admins: anyone can ask here, and the answer is
-    // public (the prompt says so, too).
-    const services = admins.has(req.userId) ? (await Promise.all(Object.values(logins).map((l) => l.load())), enabledServices(logins, TOOLS)) : []
-    const job = { who: `@${req.author}`, writes: [], tools: services.map((s) => s.name) } // what its token opens
-    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write, services })
+    // No team tools on GitHub: a public thread, run at anyone's request, and there is no shared bot
+    // login to lend it — the tools are each person's own, bound and used only in a Slack DM.
+    const job = { who: `@${req.author}`, writes: [], tools: [] } // what its token opens
+    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write })
     const prompt = known?.sessionId
-      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write, services })
+      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write })
       : await fresh()
-    let out = await turn(key, req, pr, prompt, known?.sessionId, plan, services, job)
+    let out = await turn(key, req, pr, prompt, known?.sessionId, plan, job)
     if (out.sessionLost) {
       log(`${key}: session ${known.sessionId} is gone; starting over with the full thread`)
-      out = await turn(key, req, pr, await fresh(), null, plan, services, job)
+      out = await turn(key, req, pr, await fresh(), null, plan, job)
     }
     state.threads[key] = { sessionId: out.sessionId ?? null, headSha: pr?.headSha ?? known?.headSha ?? null, lastUsed: new Date().toISOString() }
     let note = null
@@ -526,18 +526,11 @@ await ensureVolume(cfg.volume).catch((e) => log(`volume check: ${e.message} — 
 onRequest = accept
 await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}, codex ${CODEX_VERSION}, build ${build.commit?.slice(0, 7) ?? '?'}`)
 
-const HOW_TO_LINK = {
-  linear: 'LINEAR_API_KEY=… node deploy/ctl.mjs linear-key',
-  notion: 'node deploy/ctl.mjs notion-login',
-  google: 'GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs google-login',
-}
-/** Picks up logins handed over since (ctl), keeps idle ones alive, and says in the status which are on. */
+/** Keep idle per-user OAuth logins alive (Notion drops one unused for 30 days), and say in the
+ * status how many people have linked what — the tools are per person now (`ctl link`), no shared one. */
 async function checkTools() {
-  await Promise.all(Object.values(logins).map((l) => l.load()))
-  for (const [name, l] of Object.entries(logins)) {
-    if (l.stale?.()) await l.refresh().then(() => log(`${name} login refreshed`), (e) => log(e.message))
-  }
-  await status(`tools: ${Object.entries(logins).map(([name, l]) => `${name} ${l.describe() ?? `off (${HOW_TO_LINK[name]})`}`).join(' · ')}`, 'tools')
+  await userTools.keepAlive(log)
+  await status(`tools: per person — ${await userTools.summary()}`, 'tools')
 }
 await checkTools().catch((e) => log(`tools: ${e.message}`))
 setInterval(() => checkTools().catch((e) => log(`tools: ${e.message}`)), 3_600_000).unref()
@@ -579,7 +572,7 @@ async function connectSlack() {
     await rename(handed, path.join(stateDir, 'slack-state.imported.json'))
     log(`slack: took in the Slack agent's memory: ${Object.keys(state.slack.threads).length} threads, ${state.slack.deferred.length} requests kept for us`)
   }
-  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, logins, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
+  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, userLogins: userTools, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
   if (draining) return true // shutting down meanwhile: the next controller connects
   slackBot = channel
   lastSlack = Date.now() // the trial and /healthz count Slack from its start

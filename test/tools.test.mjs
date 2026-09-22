@@ -63,7 +63,7 @@ const call = (jobToken, service, msg, { method = 'POST', headers = {} } = {}) =>
   })
 
 test('broker: the session goes through with the bot’s own credential — never the job token, never a cookie either way', async () => {
-  const job = { who: 'alice (U1)', tools: ['linear'] }
+  const job = { who: 'alice (U1)', tools: ['linear'], logins }
   const t = jobs.issue(60_000, 'T1/C1/1.1', job)
   const init = await call(t, 'linear', rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'codex', version: '0' } }))
   assert.equal(init.status, 200)
@@ -80,7 +80,7 @@ test('broker: the session goes through with the bot’s own credential — never
 })
 
 test('broker: a listed read goes through (an SSE answer streamed back) and is logged; the call is counted', async () => {
-  const job = { who: 'alice (U1)', tools: ['linear'] }
+  const job = { who: 'alice (U1)', tools: ['linear'], logins }
   const t = jobs.issue(60_000, 'T1/C1/1.1', job)
   const r = await call(t, 'linear', rpc('tools/call', { name: 'list_issues', arguments: { query: 'CI' } }))
   assert.equal(r.headers.get('content-type'), 'text/event-stream')
@@ -92,7 +92,7 @@ test('broker: a listed read goes through (an SSE answer streamed back) and is lo
 })
 
 test('broker: a tool that isn’t listed — or a method outside a tool session — never reaches the service', async () => {
-  const t = jobs.issue(60_000, 'T1/C1/1.1', { who: 'mallory (U9)', tools: ['linear'] })
+  const t = jobs.issue(60_000, 'T1/C1/1.1', { who: 'mallory (U9)', tools: ['linear'], logins })
   const before = seen.length
   const refused = await (await call(t, 'linear', rpc('tools/call', { name: 'delete_issue', arguments: { id: 'LIN-1' } }, 7))).json()
   assert.deepEqual(refused, { jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: "delete_issue isn't allowed on this bot: it may use only the linear tools it lists" }], isError: true } })
@@ -106,7 +106,7 @@ test('broker: a tool that isn’t listed — or a method outside a tool session 
 })
 
 test('broker: a listed change goes through and is recorded; the change and call budgets hold', async () => {
-  const job = { who: 'bob (U2)', writes: [], tools: ['linear'] }
+  const job = { who: 'bob (U2)', writes: [], tools: ['linear'], logins }
   const t = jobs.issue(60_000, 'T1/C1/2.2', job)
   const ok = await (await call(t, 'linear', rpc('tools/call', { name: 'save_comment', arguments: { issueId: 'LIN-1', body: 'Fixed in #12' } }))).json()
   assert.equal(ok.result.content[0].text, 'did save_comment')
@@ -127,7 +127,7 @@ test('broker: no live job token → 403 (never a 401); a service not linked, unk
   const gone = jobs.issue(60_000, 'x')
   jobs.revoke(gone)
   assert.equal((await call(gone, 'linear', rpc('tools/list', {}))).status, 403)
-  const t = jobs.issue(60_000, 'x', { tools: Object.keys(SERVICES) })
+  const t = jobs.issue(60_000, 'x', { tools: Object.keys(SERVICES), logins })
   for (const service of ['drive', 'docs', 'github', 'constructor', '../linear']) assert.equal((await call(t, service, rpc('tools/list', {}))).status, 404, service)
   assert.equal(seen.length, before)
   jobs.revoke(t)
@@ -136,7 +136,7 @@ test('broker: no live job token → 403 (never a 401); a service not linked, unk
 test("broker: a turn not given a service can't reach it with its own live token — a public GitHub thread's, say", async () => {
   const before = seen.length
   const stranger = jobs.issue(60_000, 'acme/app#7', { who: '@stranger' }) // a GitHub turn with no tools
-  const linearOnly = jobs.issue(60_000, 'acme/app#8', { who: '@admin', tools: ['linear'] })
+  const linearOnly = jobs.issue(60_000, 'acme/app#8', { who: '@admin', tools: ['linear'], logins })
   for (const [t, service] of [[stranger, 'linear'], [stranger, 'notion'], [linearOnly, 'notion']]) {
     const r = await call(t, service, rpc('tools/call', { name: service === 'linear' ? 'list_issues' : 'notion-search', arguments: {} }))
     assert.equal(r.status, 404, service)
@@ -150,7 +150,7 @@ test("broker: a turn not given a service can't reach it with its own live token 
 })
 
 test('broker: an access token the service rejects is refreshed once and the call retried; a login it keeps rejecting is a 502', async () => {
-  const t = jobs.issue(60_000, 'T1/C1/3.3', { tools: ['notion'] })
+  const t = jobs.issue(60_000, 'T1/C1/3.3', { tools: ['notion'], logins })
   reject = 'at-1'
   const r = await call(t, 'notion', rpc('tools/call', { name: 'notion-search', arguments: { query: 'spec' } }))
   assert.equal(r.status, 200)

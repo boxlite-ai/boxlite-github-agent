@@ -22,9 +22,12 @@
 //   SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… [SLACK_CONTEXT_SECRET=…] node deploy/ctl.mjs slack-tokens
 //                                     hand over the Slack app's tokens (and, taking threads over
 //                                     from another controller, its context secret) the same way
-//   LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs linear-key     the bot's Linear key, likewise
-//   node deploy/ctl.mjs notion-login | google-login  link the bot's Notion / Google account in a
-//                                     browser here (deploy/login.mjs); the tokens go straight over
+//   node deploy/ctl.mjs link <linear|notion|google> <slack-user>   bind that person's OWN tool
+//                                     token, kept per user (src/userlogins.mjs): the bot uses it
+//                                     only for their requests. Linear takes LINEAR_API_KEY; Notion
+//                                     and Google open a browser here (deploy/login.mjs) — the person
+//                                     approves as themselves. `links` lists who's bound, `unlink`
+//                                     <service> <user> removes one.
 //
 // restart, admins and rollback take --wait: wait (up to 25 min, since running turns finish first)
 // for the next start to go live, and fail if it isn't the build asked for: with --includes <sha>,
@@ -205,29 +208,47 @@ if (cmd === 'status') {
   // The context secret goes first: the controller reads it as Slack starts, once the tokens are in.
   const script = 'umask 077 && mkdir -p ~/.botlite && IFS= read -r bot && IFS= read -r app && IFS= read -r ctx; { [ -z "$ctx" ] || printf %s "$ctx" > ~/.botlite/slack-context-secret; } && printf %s "$bot" > ~/.botlite/slack-bot-token && printf %s "$app" > ~/.botlite/slack-app-token && echo stored'
   report(await sh(script, `${botToken}\n${appToken}\n${contextSecret}\n`), `handed to the controller — it connects to Slack within a minute${contextSecret ? '; if Slack was on already, the context secret applies from its next start (restart)' : ''}`)
-} else if (cmd === 'linear-key') {
-  const key = process.env.LINEAR_API_KEY ?? ''
-  if (!/^lin_api_\S+$/.test(key)) {
-    console.error("set LINEAR_API_KEY (the bot's Linear API key, lin_api_…)")
-    process.exit(2)
-  }
-  report(await sh('umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/linear-api-key && echo stored', `${key}\n`), 'handed to the controller — Linear is on from the next request')
-} else if (cmd === 'notion-login' || cmd === 'google-login') {
-  let login
-  if (cmd === 'notion-login') login = await notionLogin()
-  else {
-    const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env
-    if (!clientId || !clientSecret) {
-      console.error('set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (an OAuth client of type Desktop app — see the README)')
+} else if (cmd === 'link' || cmd === 'unlink' || cmd === 'links') {
+  // A Slack person's OWN tool token, kept per user: the bot uses it only for that person's requests
+  // (src/userlogins.mjs), so it reads only what they can. `link` runs the same key/OAuth flow as the
+  // shared handovers, but stores under the user id. The person themselves should complete any browser
+  // consent — it's their access being bound. `<user>` is their Slack id (the `U…` in the log lines).
+  const root = '~/.botlite/user-logins'
+  if (cmd === 'links') {
+    const r = await read(`find ${root} -type f ! -name '*.live.json' 2>/dev/null | sed 's#.*/user-logins/##' | sort`)
+    console.log(r.out || 'no user tokens linked')
+  } else {
+    const [service, user] = process.argv.slice(3)
+    if (!['linear', 'notion', 'google'].includes(service) || !/^[A-Za-z0-9_-]{1,64}$/.test(user ?? '')) {
+      console.error(`usage: node deploy/ctl.mjs ${cmd} <linear|notion|google> <slack-user-id>`)
       process.exit(2)
     }
-    login = await googleLogin({ clientId, clientSecret, scopes: googleScopes(TOOLS) })
+    const file = `${root}/${service}/${user}`
+    if (cmd === 'unlink') {
+      report(await sh(`rm -f ${file} ${file}.live.json && echo removed`), `unlinked ${service} for ${user}`)
+    } else {
+      let payload
+      if (service === 'linear') {
+        const key = process.env.LINEAR_API_KEY ?? ''
+        if (!/^lin_api_\S+$/.test(key)) {
+          console.error("set LINEAR_API_KEY (that person's own Linear API key, lin_api_…)")
+          process.exit(2)
+        }
+        payload = `${key}\n`
+      } else if (service === 'notion') {
+        payload = JSON.stringify(await notionLogin())
+      } else {
+        const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env
+        if (!clientId || !clientSecret) {
+          console.error('set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (the OAuth client — see the README)')
+          process.exit(2)
+        }
+        payload = JSON.stringify(await googleLogin({ clientId, clientSecret, scopes: googleScopes(TOOLS) }))
+      }
+      const r = await sh(`umask 077 && mkdir -p ${root}/${service} && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, payload)
+      report(r, `linked ${service} for ${user} — that person's own requests use it from the next one`)
+    }
   }
-  // Written aside, then moved: the controller may be reading this file. (It keeps the logins it
-  // refreshes in files of its own, so it never writes this one: oauth.mjs.)
-  const file = `~/.botlite/${cmd === 'notion-login' ? 'notion' : 'google'}-oauth.json`
-  const r = await sh(`umask 077 && mkdir -p ~/.botlite && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, JSON.stringify(login))
-  report(r, `linked${login.account ? ` as ${login.account}` : ''} and handed to the controller — on from the next request`)
 } else if (cmd === 'rollback') {
   if (!/^[0-9a-f]{7,40}$/.test(arg || '')) {
     console.error('usage: node deploy/ctl.mjs rollback <commit sha on the tracked branch>')
@@ -240,6 +261,6 @@ if (cmd === 'status') {
   if (r && r.code !== 0) process.exit(1)
   if (wait) await waitLive({ starts, want: arg, exact: true })
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | linear-key | notion-login | google-login  (restart, admins, rollback: [--wait] [--includes <sha>])')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | link <service> <user> | unlink <service> <user> | links  (restart, admins, rollback: [--wait] [--includes <sha>])')
   process.exit(2)
 }

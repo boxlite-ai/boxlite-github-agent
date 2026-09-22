@@ -1,14 +1,16 @@
-// The bot's logins to Linear, Notion and Google Workspace, held by the controller only.
+// Logins to Linear, Notion and Google Workspace, held by the controller only. Each person binds
+// their own with `ctl link` (userlogins.mjs keeps one per user); these are the building blocks.
 //
-// Linear's is an API key — nothing to refresh: from the environment (a BoxLite secret placeholder)
-// or the file `ctl linear-key` hands over. Notion's and Google's are OAuth logins kept alive here the
-// way chatgpt.mjs keeps the ChatGPT one: access tokens last hours, and refresh tokens rotate
-// (Notion's on every refresh), so the controller is their one holder and saves each new one before
-// using it. A login arrives from `node deploy/ctl.mjs notion-login` / `google-login`, done on your
-// machine (deploy/login.mjs), as a file: { token_endpoint, client_id, client_secret?, resource?,
+// Linear's is an API key — nothing to refresh. Notion's and Google's are OAuth logins kept alive
+// here the way chatgpt.mjs keeps the ChatGPT one: access tokens last hours, and refresh tokens
+// rotate (Notion's on every refresh), so the controller is their one holder and saves each new one
+// before using it. A login arrives from `ctl link notion|google` (deploy/login.mjs), done on the
+// person's machine, as a file: { token_endpoint, client_id, client_secret?, resource?,
 // access_token, refresh_token, expires_at, linked_at, max_age_days?, account? }.
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises'
 import path from 'node:path'
+
+const exists = (f) => access(f).then(() => true, () => false)
 
 const EARLY_MS = 5 * 60_000 // refresh an access token this close to its expiry
 const KEEP_ALIVE_MS = 7 * 86_400_000 // refresh an idle login this often (Notion drops one idle for 30 days)
@@ -57,6 +59,7 @@ export function oauthLogin({ name, file, fetchImpl = fetch, now = () => Date.now
       if (!res.ok) throw new Error(`${name} token refresh failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`)
       const t = await res.json()
       if (tokens !== from) return // linked again meanwhile: the new login stands, this one is done
+      if (!(await exists(live)) && !(await exists(file))) return // unlinked while refreshing: don't resurrect it
       tokens = { ...from, access_token: t.access_token, refresh_token: t.refresh_token ?? from.refresh_token, expires_at: now() + (t.expires_in ?? 3600) * 1000, refreshed_at: new Date(now()).toISOString() }
       await save(tokens) // before anything uses it: the old refresh token may already be dead
     })().finally(() => {
@@ -75,12 +78,18 @@ export function oauthLogin({ name, file, fetchImpl = fetch, now = () => Date.now
   }
 
   return {
-    /** Picks up the login on disk: one linked since (from ctl) replaces the one in memory. */
+    /** Picks up the login on disk: one linked since (from ctl) replaces the one in memory; an
+     * unlinked one (both files GONE, not merely torn mid-write) is dropped, so `ctl unlink` takes
+     * effect on the next turn without a restart. */
     async load() {
       const [kept, handed] = await Promise.all([read(live), read(file)])
       // The newer link; of one link, ours (the sort keeps it first), which may have been refreshed since.
       const newest = [kept, handed].filter(Boolean).sort((a, b) => Date.parse(b.linked_at) - Date.parse(a.linked_at))[0]
-      if (newest && newest.linked_at !== tokens?.linked_at) tokens = newest
+      if (newest) {
+        if (newest.linked_at !== tokens?.linked_at) tokens = newest
+      } else if (tokens && !(await exists(live)) && !(await exists(file))) {
+        tokens = null // both files gone: unlinked — but a torn file (still there) is ignored, kept
+      }
       return Boolean(tokens)
     },
     ready: () => Boolean(tokens),

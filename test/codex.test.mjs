@@ -186,8 +186,8 @@ test('codexArgs: each tool service is an MCP server at the controller, on the jo
 test('prompts: the tools, their names and whose account they use; changes only when asked — or read-only', () => {
   const services = [{ name: 'linear', label: 'Linear', writes: true }, { name: 'docs', label: 'Google Docs', writes: false }]
   const p = slackSessionPrompt({ ...talk, services })
-  assert.match(p, /You also have tools for the team's Linear and Google Docs \(named mcp__linear__… and mcp__docs__…\),\nsigned in as the bot's own account/)
-  assert.match(p, /You can make some changes, in Linear\. They show up as the bot, so\nmake one only when the request asks for it, and say in your answer what you changed\./)
+  assert.match(p, /You also have tools for the team's Linear and Google Docs \(named mcp__linear__… and mcp__docs__…\),\nsigned in as the person you're helping \(their own account\): you see only what they can see/)
+  assert.match(p, /You can make some changes, in Linear\. They show up as the person, so\nmake one only when the request asks for it, and say in your answer what you changed\./)
   assert.match(slackSessionPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /tools for the team's Notion \(named mcp__notion__…\)[\s\S]*They only read\./)
   assert.doesNotMatch(slackSessionPrompt(talk), /You also have tools/)
   assert.doesNotMatch(p, /This thread is public/) // a workspace's members only
@@ -195,11 +195,23 @@ test('prompts: the tools, their names and whose account they use; changes only w
   assert.match(slackFollowUpPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /Tools this turn: Notion \(they only read\)\./)
 })
 
-test('prompts: on GitHub the tools come only to an admin’s turn, which is told the thread is public', () => {
-  const services = [{ name: 'linear', label: 'Linear', writes: false }]
-  const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' }, services })
-  assert.match(p, /You also have tools for the team's Linear \(named mcp__linear__…\)/)
-  assert.match(p, /This thread is public, and so is your answer: use what the tools show you to do the work, but put\nin your answer only what the request needs, and nothing that shouldn't be public\./)
-  assert.doesNotMatch(newSessionPrompt({ login: 'botlite', req, pr }), /You also have tools|This thread is public/) // everyone else's turn
-  assert.match(followUpPrompt({ login: 'botlite', req, pr, services }), /^New request in the same thread\.\nTools this turn: Linear \(they only read\)\./)
+test('Slack prompts: guide someone to link their own tool when they have not, and use only their access', () => {
+  const p = slackSessionPrompt({ ...talk, linkable: ['linear', 'notion'] })
+  assert.match(p, /hasn't linked their Linear and Notion yet[\s\S]*node deploy\/ctl\.mjs link <linear\|notion> <their Slack id>[\s\S]*use their own access, never anyone else's/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /hasn't linked their/) // nothing to link → no note
+  assert.match(slackFollowUpPrompt({ ...talk, linkable: ['google'] }), /hasn't linked their Google Workspace yet/)
+  assert.doesNotMatch(slackFollowUpPrompt(talk), /hasn't linked their/)
+})
+
+test('prompts: GitHub has no team tools at all — they are per-person and Slack-DM-only', () => {
+  const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' } })
+  assert.doesNotMatch(p, /You also have tools|This thread is public|mcp__/)
+  assert.match(p, /You hold no credentials, so your\nshell reaches only what's public\./)
+  assert.doesNotMatch(followUpPrompt({ login: 'botlite', req, pr }), /Tools this turn|mcp__/)
+})
+
+test('Slack prompts: in a channel the team tools are unavailable and the bot is told to say DM me', () => {
+  assert.match(slackSessionPrompt({ ...talk, dmForTools: true }), /This is a channel, so the team tools \(Linear, Notion, Google\) aren't available[\s\S]*work only in a direct message[\s\S]*tell them to DM you/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /This is a channel, so the team tools/) // a DM, or nothing linked
+  assert.match(slackFollowUpPrompt({ ...talk, dmForTools: true }), /aren't available: they act as one person's own account/)
 })

@@ -36,7 +36,7 @@ export function enabledServices(logins, policy) {
 }
 const tools = (policy, name) => [...(policy[name]?.read ?? []), ...(policy[name]?.write ?? [])]
 
-/** The Google scopes a login needs for what the policy allows (ctl google-login asks for these). */
+/** The Google scopes a login needs for what the policy allows (`ctl link google` asks for these). */
 export function googleScopes(policy) {
   const scopes = new Set(['openid', 'email'])
   for (const [name, s] of Object.entries(SERVICES)) {
@@ -76,7 +76,7 @@ export function check(service, body, allowed, job, { maxCalls = 60, maxWrites = 
  * The /mcp/<service> handler. `logins`: { linear, notion, google } (oauth.mjs), each ready() once
  * it's in place, with token() — and refresh() where there's one. `policy`: access.mjs TOOLS.
  */
-export function toolBroker({ secret, jobs, logins, policy, fetchImpl = fetch, log = () => {}, limits }) {
+export function toolBroker({ secret, jobs, policy, fetchImpl = fetch, log = () => {}, limits }) {
   return async (req, res) => {
     // Never a 401: it would send Codex into an OAuth login of its own, which can't work in a box.
     const claims = verifyJobToken(secret, /^Bearer (\S+)$/.exec(req.headers.authorization || '')?.[1])
@@ -90,7 +90,9 @@ export function toolBroker({ secret, jobs, logins, policy, fetchImpl = fetch, lo
       if (service) log(`${claims.thread}: refused ${name} for ${job.who ?? 'someone'} — this request wasn't given it`)
       return send(res, 404, 'no such tool service for this request')
     }
-    const login = logins[service.login]
+    // Whose login this turn uses: the requester's own (Slack) or the bot's shared one (GitHub
+    // admins) — set on the job when the turn is built, never a login another request could reach.
+    const login = job.logins?.[service.login]
     if (!login?.ready() || !tools(policy, name).length) return send(res, 404, 'no such tool service on this bot')
     if (!['POST', 'GET', 'DELETE'].includes(req.method)) return send(res, 405, 'not an MCP request')
 
