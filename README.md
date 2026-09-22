@@ -197,6 +197,42 @@ request needs in its answer. Each service is off until its login is in place. Gi
 account**: every call acts as that account, and anyone who can ask the bot can read whatever it
 can read. So share with it only what everyone who can ask may see.
 
+**How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
+service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
+the controller checks the call, swaps in the bot's own login, and forwards it to the service's
+official MCP server — the swap the same idea as a write turn's git push (gitpush.mjs).
+
+```mermaid
+sequenceDiagram
+    participant A as Asker (Slack / GitHub)
+    participant B as Session box (Codex)
+    participant C as Controller (broker)
+    participant S as Official MCP server
+    A->>B: a request, in one thread
+    Note over B: no credentials —<br/>only this turn's job token
+    B->>C: POST /mcp/linear (Bearer job token)<br/>tools/call save_issue
+    Note over C: verify the token · was this turn<br/>given linear? · is the login in place? ·<br/>is save_issue on the policy list? ·<br/>under the 10-change / 60-call budget?
+    C->>S: the same call + the bot's Linear login
+    S-->>C: result
+    C-->>B: result (MCP headers only, no vendor cookies)
+    Note over C: logs who · thread · tool,<br/>counts the change
+    B-->>A: the answer, ending<br/>"changed: Linear save_issue"
+```
+
+Any failed check ends the call there — a service the turn wasn't given, a tool not in `TOOLS`, a
+spent budget — so a public GitHub thread can't reach a tool its turn never got, and Codex can't
+call one you didn't list, however it's asked. One real Slack request ("file a Linear issue and
+create a Notion page"), as the controller logged it:
+
+```
+linear list_teams                       (read: find a team)
+notion notion-fetch                     (read)
+linear save_issue (a change)            → the issue
+notion notion-create-pages (a change)   → the page
+notion notion-get-users · linear get_user · notion notion-fetch   (reads: the links)
+answered Dorian, changed: Linear save_issue · Notion notion-create-pages
+```
+
 | | Linear | Notion | Google Workspace |
 |---|---|---|---|
 | The bot's account | a member for the bot | a member or guest for the bot | a Workspace user, like `botlite@yourco.com` |
