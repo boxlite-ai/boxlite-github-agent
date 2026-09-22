@@ -74,6 +74,20 @@ test('only the model endpoints go through — the rest of the ChatGPT backend is
   jobs.revoke(t)
 })
 
+test('/git/ goes to the git push route when there is one, and is a 404 like the rest otherwise', async () => {
+  const hits = []
+  const withGit = createProxy({ login, secret: SECRET, jobs, upstream: 'http://127.0.0.1:9', git: (req, res) => (hits.push(req.url), res.writeHead(204).end()) })
+  await new Promise((r) => withGit.listen(0, '127.0.0.1', r))
+  try {
+    const r = await fetch(`http://127.0.0.1:${withGit.address().port}/git/info/refs?service=git-receive-pack`)
+    assert.equal(r.status, 204)
+    assert.deepEqual(hits, ['/git/info/refs?service=git-receive-pack'])
+  } finally {
+    withGit.close()
+  }
+  assert.equal((await fetch(`${base}/git/info/refs?service=git-receive-pack`)).status, 404) // the proxy under test has none
+})
+
 test('no live job token → 403 (never a 401, which would send Codex into its own refresh)', async () => {
   const before = seen.length
   assert.equal((await call(null)).status, 403)

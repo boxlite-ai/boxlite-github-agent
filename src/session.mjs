@@ -53,9 +53,11 @@ export async function ensureBox(bl, name, cfg) {
 
 /**
  * Run one turn. `jobToken` is the box's stand-in ChatGPT login for this turn, `proxyUrl` the
- * controller's public origin. @returns {{ sessionId, message, error, sessionLost }}.
+ * controller's public origin. On a write turn `write` ({ base, baseUrl, staging }, publish.mjs)
+ * puts the checkout on its base commit and has the runner push what Codex commits to the staging
+ * branch, through the controller. @returns {{ sessionId, message, error, sessionLost, push }}.
  */
-export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, log = () => {} }) {
+export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write, log = () => {} }) {
   const box = await ensureBox(bl, boxName(key), cfg)
   const boxId = box.id || box.name
   // A stopped (or stopping) box: start it now rather than leaning on exec auto-resume, which can
@@ -77,6 +79,7 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobTok
       CODEX_VERSION,
       BOTLITE_ARGS: JSON.stringify(args),
       BOTLITE_JOB_TOKEN: jobToken,
+      ...(write ? { BASE_SHA: write.base, BASE_URL: write.baseUrl, PUSH_URL: `${proxyUrl}/git`, PUSH_REF: `refs/heads/${write.staging}` } : {}),
     },
     timeout_seconds: Math.ceil(cfg.jobTimeoutMs / 1000),
   })
@@ -114,5 +117,5 @@ export async function runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobTok
     : result?.setupError || run.error || result?.spawnError || `no answer (exit ${result?.code ?? '?'}): ${stderr.slice(-400)}`
   // Codex's exact words when the session to resume is gone (its snapshot was lost/rejected).
   const sessionLost = Boolean(sessionId) && !message && /no rollout found for thread id/.test(stderr)
-  return { sessionId: run.sessionId ?? sessionId, message, error, sessionLost }
+  return { sessionId: run.sessionId ?? sessionId, message, error, sessionLost, push: result?.push ?? null }
 }

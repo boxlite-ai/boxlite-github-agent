@@ -65,8 +65,19 @@ const clip = (s, n) => {
 }
 const where = (req) => (req.kind === 'review_comment' ? ` on \`${req.path}\`${req.line ? ` line ${req.line}` : ''}` : '')
 
+/**
+ * Whether this request may publish, said on every turn: a follow-up can come from someone who
+ * may not. `write` is { allowed: true, describe, base } (publish.mjs) or { allowed: false, why }.
+ */
+function publishing(login, req, write) {
+  if (!write?.allowed) {
+    return `You can't publish changes for this request (@${req.author}: ${write?.why ?? 'not allowed'}). If it asks for a PR, say so and give the change as a diff instead.`
+  }
+  return `This request may publish changes. The checkout is on a local branch, \`botlite\`, at the commit a change builds on (${write.base.slice(0, 7)}). If the request asks for a change to the code, make it and commit it there with \`git commit\`: the message's first line becomes the title, the rest the description. Don't push — after you finish, your commits are checked and published ${write.describe}, as one commit by @${login}. Only committed changes count, and changes to workflows, actions, CODEOWNERS, submodules, symlinks or funding links are refused. The link is added under your reply, so don't invent one. If the request only asks a question, just answer it.`
+}
+
 /** First turn of a thread's session: who we are, the sandbox, the thread, then the request. */
-export function newSessionPrompt({ login, req, pr, comments = [] }) {
+export function newSessionPrompt({ login, req, pr, comments = [], write }) {
   const t = req.thread
   const kind = req.isPR ? 'Pull request' : 'Issue'
   const checkout = pr
@@ -98,12 +109,14 @@ ${clip(req.body, 8000)}
 Do what the request asks. You cannot push commits or post to GitHub yourself: your final message
 is posted verbatim as @${login}'s reply in this thread. Write it in GitHub-flavored Markdown,
 addressed to @${req.author}, concise, with code or a diff inline when you propose a change, and say
-which commands you ran when their results support your answer.`
+which commands you ran when their results support your answer.
+
+${publishing(login, req, write)}`
 }
 
 /** A later request in the same thread: the session already holds the earlier context. */
-export function followUpPrompt({ login, req, headMoved, pr }) {
-  const moved = headMoved && pr ? `\nThe PR has new commits since your last reply — the checkout now points at ${pr.headSha.slice(0, 7)}.\n` : ''
+export function followUpPrompt({ login, req, headMoved, pr, write }) {
+  const moved = headMoved && pr && !write?.allowed ? `\nThe PR has new commits since your last reply — the checkout now points at ${pr.headSha.slice(0, 7)}.\n` : ''
   return `New request in the same thread.${moved}
 
 <github>
@@ -112,5 +125,7 @@ Request from @${req.author}${where(req)} — ${req.url}:
 ${clip(req.body, 8000)}
 </github>
 
-As before, your final message is posted verbatim as @${login}'s reply, addressed to @${req.author}.`
+As before, your final message is posted verbatim as @${login}'s reply, addressed to @${req.author}.
+
+${publishing(login, req, write)}`
 }

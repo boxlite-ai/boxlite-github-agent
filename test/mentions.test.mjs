@@ -79,13 +79,13 @@ test('requestsFrom: new mentioning comments only — not ours, not bots, not see
   const gh = fakeGh({
     issue: { id: 1, title: 'Fix it', body: 'old body @botlite', user: user('alice'), state: 'open', html_url: 'u', created_at: '2026-01-01T00:00:00Z', pull_request: {} },
     comments: [
-      { id: 10, body: '@botlite why does this fail?', user: user('bob'), created_at: '2026-09-21T11:30:00Z', html_url: 'c10' },
+      { id: 10, body: '@botlite why does this fail?', user: user('bob'), created_at: '2026-09-21T11:30:00Z', updated_at: '2026-09-21T11:40:00Z', html_url: 'c10' },
       { id: 11, body: 'unrelated', user: user('carol'), created_at: '2026-09-21T11:31:00Z', html_url: 'c11' },
       { id: 12, body: '@botlite loop', user: user('botlite'), created_at: '2026-09-21T11:32:00Z', html_url: 'c12' },
       { id: 13, body: '@botlite hi', user: user('dependabot[bot]', 'Bot'), created_at: '2026-09-21T11:33:00Z', html_url: 'c13' },
       { id: 14, body: '@botlite again', user: user('bob'), created_at: '2026-09-21T11:34:00Z', html_url: 'c14' },
     ],
-    reviewComments: [{ id: 20, body: '@botlite is this line safe?', user: user('dave'), created_at: '2026-09-21T11:20:00Z', html_url: 'r20', path: 'src/a.js', line: 42 }],
+    reviewComments: [{ id: 20, body: '@botlite is this line safe?', user: { ...user('dave'), id: 4 }, author_association: 'COLLABORATOR', created_at: '2026-09-21T11:20:00Z', updated_at: '2026-09-21T11:20:00Z', html_url: 'r20', path: 'src/a.js', line: 42 }],
   })
   const reqs = await requestsFrom(gh, notification(), { login: 'botlite', seen: new Set(['ic:14']), now: NOW })
 
@@ -93,8 +93,10 @@ test('requestsFrom: new mentioning comments only — not ours, not bots, not see
   assert.deepEqual({ ...reqs[0], thread: undefined, user: undefined }, {
     id: 'rc:20', kind: 'review_comment', commentId: 20, body: '@botlite is this line safe?', createdAt: '2026-09-21T11:20:00Z',
     url: 'r20', path: 'src/a.js', line: 42, author: 'dave', repo: 'acme/app', number: 7, isPR: true, thread: undefined, user: undefined,
+    userId: 4, association: 'COLLABORATOR', edited: false, // who they are to the repo, for access.mjs
   })
   assert.equal(reqs[1].thread.title, 'Fix it')
+  assert.deepEqual([reqs[1].association, reqs[1].edited], ['NONE', true]) // edited after posting
   assert.ok(gh.calls.some((p) => p.includes('/issues/7/comments?since=2026-09-21T10:55:00.000Z'))) // last read − 5 min
 })
 

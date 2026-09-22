@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { spawnSync, execFileSync } from 'node:child_process'
+import { test, after } from 'node:test'
+import http from 'node:http'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createDecipheriv, randomBytes } from 'node:crypto'
 import { CODEX_VERSION } from '../src/codex.mjs'
+import { jobTokens } from '../src/chatgpt.mjs'
+import { gitPushHandler } from '../src/gitpush.mjs'
+import { gitServer } from './gitserver.mjs'
 
 // The real in-box runner (box/session.mjs) as a process: a fake `codex` on PATH, a pre-made
 // checkout (so no network), a "volume" directory — then a second, fresh box restores from it.
+// A prompt that says COMMIT makes the fake Codex commit a change, as a write turn would.
 const RUNNER = path.resolve('box/session.mjs')
 const root = mkdtempSync(path.join(tmpdir(), 'runner-'))
+after(() => rmSync(root, { recursive: true, force: true }))
 const bin = path.join(root, 'bin')
 mkdirSync(bin)
 writeFileSync(
@@ -24,6 +30,7 @@ mkdir -p "$CODEX_HOME/sessions"
 echo "turn: $prompt" >> "$CODEX_HOME/sessions/rollout.jsonl"
 grep -o '"access_token":"[^"]*"' "$CODEX_HOME/auth.json" >> "$CODEX_HOME/sessions/rollout.jsonl"
 echo "api-key-env: \${OPENAI_API_KEY:-none}" >> "$CODEX_HOME/sessions/rollout.jsonl"
+case "$prompt" in *COMMIT*) printf 'fixed\\n' > fix.txt && git add fix.txt && git commit -qm "Fix the thing" ;; esac
 echo '{"type":"thread.started","thread_id":"th-1"}'
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}'
 echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
@@ -102,5 +109,73 @@ test('runner: a snapshot sealed with another key is refused and the turn starts 
   assert.equal(result.code, 0)
   assert.match(r.stderr, /context snapshot unusable, starting fresh/)
   assert.equal(readFileSync(path.join(ctx, 'codex', 'sessions', 'rollout.jsonl'), 'utf8').match(/^turn: /gm).length, 1)
-  rmSync(root, { recursive: true, force: true })
+})
+
+// A write turn end to end: the runner checks out the controller's base commit, the fake Codex
+// commits, the runner pushes with its job token to the controller's git route, which lets only
+// the granted staging ref through to a fake github.com (`git http-backend`) holding the fork.
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
+const UPSTREAM = path.join(root, 'upstream.git')
+const FORK = path.join(root, 'github', 'botlite', 'app.git')
+const STAGING = 'refs/heads/botlite-staging/acme/app/7'
+
+async function writeTurn(ctx, prompt, token) {
+  mkdirSync(path.join(ctx, 'repo'), { recursive: true })
+  execFileSync('git', ['init', '-q', path.join(ctx, 'repo')])
+  const child = spawn(process.execPath, [RUNNER], {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`, CTX: ctx, CONTEXT_KEY: KEY, REPO: 'acme/app', NUMBER: '7', IS_PR: '0', CODEX_VERSION,
+      BOTLITE_ARGS: JSON.stringify(['exec', '--json', '-o', path.join(ctx, 'last-message.md'), '-']),
+      BOTLITE_JOB_TOKEN: token, BASE_SHA: writeTurn.base, BASE_URL: UPSTREAM, PUSH_URL: writeTurn.pushUrl, PUSH_REF: STAGING,
+    },
+  })
+  let stdout = ''
+  child.stdout.on('data', (d) => (stdout += d))
+  child.stdin.end(prompt)
+  await new Promise((r) => child.on('close', r))
+  return JSON.parse(stdout.trim().split('\n').at(-1))
+}
+
+test('runner: a write turn starts on the base commit and pushes what Codex committed — through the controller only', async () => {
+  const seed = path.join(root, 'seed')
+  git('init', '-q', '-b', 'main', seed)
+  writeFileSync(path.join(seed, 'README'), 'app\n')
+  git('-C', seed, 'add', 'README')
+  git('-C', seed, '-c', 'user.name=u', '-c', 'user.email=u@u', 'commit', '-qm', 'init')
+  git('clone', '-q', '--bare', seed, UPSTREAM)
+  writeTurn.base = git('-C', seed, 'rev-parse', 'HEAD')
+  mkdirSync(path.dirname(FORK), { recursive: true })
+  git('init', '-q', '--bare', FORK)
+
+  const SECRET = Buffer.from('job-secret')
+  const jobs = jobTokens(SECRET)
+  const github = await gitServer(path.join(root, 'github'))
+  const proxy = http.createServer(gitPushHandler({ secret: SECRET, jobs, upstream: github.url }))
+  await new Promise((r) => proxy.listen(0, '127.0.0.1', r))
+  writeTurn.pushUrl = `http://127.0.0.1:${proxy.address().port}/git`
+  const grant = { ref: STAGING, open: async () => ({ repo: 'botlite/app', token: 'ghs_turn' }) }
+  try {
+    const token = jobs.issue(60_000, 'acme/app#7', { push: grant })
+    const result = await writeTurn(path.join(root, 'box-w'), 'COMMIT a fix', token)
+    assert.equal(result.code, 0)
+    assert.match(result.push.pushed, /^[0-9a-f]{40}$/)
+    assert.equal(git('--git-dir', FORK, 'rev-parse', STAGING), result.push.pushed) // landed on the one staging ref
+    assert.equal(git('--git-dir', FORK, 'rev-parse', `${STAGING}^`), writeTurn.base) // on top of the base
+    assert.equal(git('--git-dir', FORK, 'show', `${STAGING}:fix.txt`), 'fixed')
+    assert.equal(git('-C', path.join(root, 'box-w', 'repo'), 'rev-parse', '--abbrev-ref', 'HEAD'), 'botlite')
+    jobs.revoke(token)
+
+    const quiet = jobs.issue(60_000, 'acme/app#7', { push: grant })
+    assert.deepEqual((await writeTurn(path.join(root, 'box-q'), 'just a question', quiet)).push, { pushed: null, uncommitted: false })
+    jobs.revoke(quiet)
+
+    const readOnly = jobs.issue(60_000, 'acme/app#7') // a job without a push grant
+    const refused = await writeTurn(path.join(root, 'box-r'), 'COMMIT anyway', readOnly)
+    assert.equal(refused.push.pushed, null)
+    assert.match(refused.push.error, /403/)
+    jobs.revoke(readOnly)
+  } finally {
+    proxy.close()
+    github.close()
+  }
 })

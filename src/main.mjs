@@ -11,6 +11,10 @@
 //           BOXLITE_SECRET_CHATGPT_* placeholders), else a device login run in this box
 //   BoxLite BOXLITE_API_KEY / BOXLITE_SECRET_BOXLITE (required)
 //   CONTEXT_SECRET — else generated once into <state dir>/context-secret
+//   PRs     the push App (githubapp.mjs): GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY, or
+//           <state dir>/github-app.json (ctl github-app) — without it, PR writing is off;
+//           BOT_ADMINS, or <state dir>/bot-admins (ctl admins): GitHub logins (comma-separated)
+//           who may ask for PRs anywhere and run the admin commands (access.mjs)
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SESSION_IMAGE (node),
 //   SESSION_CPUS (2), SESSION_MEMORY_MIB (4096), CODEX_MODEL, MAX_CONCURRENT (3),
@@ -20,7 +24,7 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { github } from './github.mjs'
-import { poll, requestsFrom, markRead } from './mentions.mjs'
+import { poll, requestsFrom, markRead, standing } from './mentions.mjs'
 import { loadState, saveState, takeQuota } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
@@ -28,6 +32,10 @@ import { runTurn } from './session.mjs'
 import { newSessionPrompt, followUpPrompt } from './codex.mjs'
 import { chatgptLogin, jobTokens, deviceLogin } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
+import { gitPushHandler } from './gitpush.mjs'
+import { githubApp, appJwt } from './githubapp.mjs'
+import { parseCommand, runCommand, writeAccess } from './access.mjs'
+import { planWrite, publishWrite } from './publish.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 
@@ -113,7 +121,8 @@ const webhook = webhookHandler({
     return true
   },
 })
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log, webhook })
+const git = gitPushHandler({ secret: jobSecret, jobs, log })
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: cfg.model, log, webhook, git })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -149,10 +158,49 @@ const me = await gh.json('GET', '/user')
 if (env.BOT_LOGIN && env.BOT_LOGIN.toLowerCase() !== me.login.toLowerCase()) log(`BOT_LOGIN=${env.BOT_LOGIN} ignored: the GitHub token is @${me.login}'s`)
 cfg.login = me.login
 
+/** A GitHub user's id and login, or null if there's no such user. */
+const lookup = (login) => gh.json('GET', `/users/${encodeURIComponent(login)}`).then((u) => ({ id: u.id, login: u.login }), (e) => (e.status === 404 ? null : Promise.reject(e)))
+// Admins by numeric id: a renamed login can be re-registered by someone else. `ctl admins`
+// (<state dir>/bot-admins) replaces BOT_ADMINS, so they can change without a redeploy.
+const adminLogins = ((await readSecretFile('bot-admins')) || env.BOT_ADMINS || '').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean)
+const admins = new Map()
+for (const login of adminLogins) {
+  const u = await lookup(login).catch((e) => (log(`BOT_ADMINS: @${login}: ${e.message}`), undefined))
+  if (u) admins.set(u.id, u.login)
+  else if (u === null) log(`BOT_ADMINS: no GitHub user @${login}`)
+}
+
+/**
+ * The push App (githubapp.mjs), from the environment or `ctl github-app` — looked for on each
+ * write-eligible request until found, so it can be handed over without a restart. A missing or
+ * broken one only turns PR writing off (and says so in status), never the answers.
+ */
+let pushApp = null
+let pushAppProblem
+async function loadPushApp() {
+  if (pushApp) return pushApp
+  let problem = null
+  try {
+    const conf = env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY
+      ? { appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, '\n') }
+      : JSON.parse(await readFile(path.join(stateDir, 'github-app.json'), 'utf8').catch((e) => (e.code === 'ENOENT' ? 'null' : Promise.reject(e))))
+    if (conf?.appId && conf?.privateKey) {
+      appJwt(conf.appId, conf.privateKey) // a key that can't sign is no App
+      pushApp = githubApp({ appId: conf.appId, privateKey: conf.privateKey, account: cfg.login })
+    } else problem = 'PR writing is off until the push App is set up — GITHUB_APP_ID=… GITHUB_APP_KEY=app.pem node deploy/ctl.mjs github-app'
+  } catch (e) {
+    problem = `PR writing is off: the push App's config doesn't work (${e.message.slice(0, 120)})`
+  }
+  if (problem !== pushAppProblem) await status((pushAppProblem = problem), 'push-app')
+  return pushApp
+}
+await loadPushApp()
+
 /**
  * A webhook mention, re-read from GitHub with the bot's own token: accepted only if that comment /
  * issue really exists with that author and text. The signature proves who sent the delivery; this
  * proves what it says — so even a leaked webhook secret can't make the bot post where no one asked.
+ * Who the author is to the repo (and whether they may publish) comes from this read too.
  */
 async function confirmed(req) {
   const path =
@@ -160,12 +208,12 @@ async function confirmed(req) {
       : req.kind === 'review_comment' ? `/repos/${req.repo}/pulls/comments/${req.commentId}`
         : `/repos/${req.repo}/issues/${req.number}`
   const live = await gh.json('GET', path).catch(() => null)
-  return live && live.user?.login === req.author && live.body === req.body ? req : null
+  return live && live.user?.login === req.author && live.body === req.body ? { ...req, userId: live.user.id, ...standing(live) } : null
 }
 
 async function prInfo(req) {
   const pr = await gh.json('GET', `/repos/${req.repo}/pulls/${req.number}`)
-  return { headSha: pr.head.sha, baseRef: pr.base.ref }
+  return { headSha: pr.head.sha, baseRef: pr.base.ref, headRef: pr.head.ref, headRepo: pr.head.repo?.full_name ?? null }
 }
 
 /** The thread's most recent comments (GitHub lists them oldest first, so read the last page). */
@@ -178,57 +226,99 @@ async function recentComments(req) {
  * One turn with its own job token, revoked the moment the turn ends. Its `exp` is deliberately
  * far off: Codex refreshes a ChatGPT token on its own when it nears expiry — impossible in a box,
  * and it stalls the turn (seen end-to-end with a short-lived token). What bounds a token's use is
- * the proxy honouring only live tokens, and the revoke below.
+ * the proxy honouring only live tokens, and the revoke below. A write turn's token may also push
+ * one staging branch (gitpush.mjs) — the revoke ends that too, before anything is published.
  */
-async function turn(key, req, pr, prompt, sessionId) {
-  const jobToken = jobs.issue(12 * 3_600_000, key)
+async function turn(key, req, pr, prompt, sessionId, plan) {
+  const push = plan ? { ref: `refs/heads/${plan.staging}`, open: () => plan.open() } : null
+  const jobToken = jobs.issue(12 * 3_600_000, key, { push })
   try {
-    return await runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, log })
+    return await runTurn({ bl, cfg, key, req, pr, prompt, sessionId, jobToken, proxyUrl, write: plan, log })
   } finally {
     jobs.revoke(jobToken)
   }
 }
 
+/** May this request publish — and if so, the plan for it (publish.mjs). */
+async function writeTurn(req, pr, key) {
+  const access = writeAccess({ state, admins, req, ready: Boolean(await loadPushApp()) })
+  if (!access.ok) return { write: { allowed: false, why: access.why }, plan: null }
+  try {
+    const plan = await planWrite({ gh, app: pushApp, me, req, pr, key, knownFork: state.forks[req.repo.toLowerCase()], log })
+    return { write: { allowed: true, describe: plan.describe, base: plan.base }, plan }
+  } catch (e) {
+    log(`${key}: no write turn: ${e.message}`)
+    return { write: { allowed: false, why: `setting up the PR branch failed (${e.message.slice(0, 200)})` }, plan: null }
+  }
+}
+
 async function handle(req) {
   const key = `${req.repo}#${req.number}`
+  let plan = null
   try {
     const pr = req.isPR ? await prInfo(req) : null
     const known = state.threads[key]
-    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req) })
+    const { write, plan: planned } = await writeTurn(req, pr, key)
+    plan = planned
+    const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write })
     const prompt = known?.sessionId
-      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha) })
+      ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write })
       : await fresh()
-    let out = await turn(key, req, pr, prompt, known?.sessionId)
+    let out = await turn(key, req, pr, prompt, known?.sessionId, plan)
     if (out.sessionLost) {
       log(`${key}: session ${known.sessionId} is gone; starting over with the full thread`)
-      out = await turn(key, req, pr, await fresh(), null)
+      out = await turn(key, req, pr, await fresh(), null, plan)
     }
     state.threads[key] = { sessionId: out.sessionId ?? null, headSha: pr?.headSha ?? known?.headSha ?? null, lastUsed: new Date().toISOString() }
+    let note = null
+    if (plan) {
+      const refuse = state.paused ? 'an admin paused PR writing while I worked' : null
+      note = await publishWrite({ gh, app: pushApp, me, plan, req, result: out.push, refuse, log }).catch((e) => (log(`${key}: publish: ${e.stack || e.message}`), `⚠️ Couldn't publish the change: ${e.message.slice(0, 200)}`))
+      if (plan.fork) state.forks[req.repo.toLowerCase()] = plan.fork
+      if (note) log(`${key}: ${note}`)
+    }
     persist()
     await req.ack // the 👀 always lands before the answer
     if (out.message) {
-      await reply(gh, req, out.message)
+      await reply(gh, req, note ? `${out.message}\n\n${note}` : out.message)
       log(`${key}: answered @${req.author}`)
     } else {
       log(`${key}: no answer — ${out.error}`)
-      await reply(gh, req, `@${req.author} sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.`)
+      await reply(gh, req, `@${req.author} sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${note ? `\n\n${note}` : ''}`)
     }
   } catch (e) {
     log(`${key}: ${e.stack || e.message}`)
+    if (plan?.token) pushApp.revoke(plan.token).catch(() => {})
     await reply(gh, req, `@${req.author} sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
   }
+}
+
+/** A command (access.mjs): answered by the controller itself — no box, no model. */
+async function command(req, cmd) {
+  const access = writeAccess({ state, admins, req, ready: Boolean(await loadPushApp()) })
+  const left = cfg.dailyLimit - (state.usage[req.author]?.count ?? 0)
+  const text = await runCommand(cmd, { state, admins, req, login: cfg.login, lookup, access, left, limit: cfg.dailyLimit })
+  await persist()
+  await reply(gh, req, text, { footer: false })
 }
 
 function accept(req, via = 'poll') {
   if (draining) return // not marked seen: the next controller picks it up
   state.seen.add(req.id) // at most once: a crash mid-run must not produce a second reply later
-  if (!takeQuota(state, req.author, cfg.dailyLimit)) {
+  const cmd = parseCommand(req.body, cfg.login)
+  // An admin's command is never over the limit: `/pause` has to work on a busy day.
+  if (!(cmd && admins.has(req.userId)) && !takeQuota(state, req.author, cfg.dailyLimit)) {
     const usage = state.usage[req.author]
     log(`@${req.author} is over today's limit`)
     if (!usage.notified) {
       usage.notified = true
       reply(gh, req, `@${req.author} you've reached today's limit of ${cfg.dailyLimit} requests — it resets at 00:00 UTC.`).catch(() => {})
     }
+    return
+  }
+  if (cmd) {
+    log(`${req.repo}#${req.number}: ${cmd.unknown ? `unknown command /${cmd.unknown}` : `/${cmd.name}`} from @${req.author} via ${via}`)
+    command(req, cmd).catch((e) => log(`${req.repo}#${req.number}: command failed: ${e.stack || e.message}`))
     return
   }
   log(`${req.repo}#${req.number}: request from @${req.author} via ${via} (${req.url})`)
@@ -277,7 +367,7 @@ process.on('SIGTERM', async () => {
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
 onRequest = accept
-await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}`)
+await status(`live as @${cfg.login}: proxy ${proxyUrl}, webhook ${proxyUrl}/webhook, ${cfg.maxConcurrent} concurrent turns, ${cfg.dailyLimit}/user/day, volume ${cfg.volume}, admins ${[...admins.values()].map((l) => `@${l}`).join(' ') || 'none'}`)
 for (;;) {
   let interval = 60
   try {
