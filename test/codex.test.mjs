@@ -186,13 +186,21 @@ test('codexArgs: each tool service is an MCP server at the controller, on the jo
 test('prompts: the tools, their names and whose account they use; changes only when asked — or read-only', () => {
   const services = [{ name: 'linear', label: 'Linear', writes: true }, { name: 'docs', label: 'Google Docs', writes: false }]
   const p = slackSessionPrompt({ ...talk, services })
-  assert.match(p, /You also have tools for the team's Linear and Google Docs \(named mcp__linear__… and mcp__docs__…\),\nsigned in as the bot's own account/)
-  assert.match(p, /You can make some changes, in Linear\. They show up as the bot, so\nmake one only when the request asks for it, and say in your answer what you changed\./)
+  assert.match(p, /You also have tools for the team's Linear and Google Docs \(named mcp__linear__… and mcp__docs__…\),\nsigned in as the person you're helping \(their own account\): you see only what they can see/)
+  assert.match(p, /You can make some changes, in Linear\. They show up as the person, so\nmake one only when the request asks for it, and say in your answer what you changed\./)
   assert.match(slackSessionPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /tools for the team's Notion \(named mcp__notion__…\)[\s\S]*They only read\./)
   assert.doesNotMatch(slackSessionPrompt(talk), /You also have tools/)
   assert.doesNotMatch(p, /This thread is public/) // a workspace's members only
   assert.match(slackFollowUpPrompt({ ...talk, services }), /^New request in the same thread\.\n\nTools this turn: Linear and Google Docs — as before, change things only when asked, and say what you changed\.\n\nOpening pull requests isn't available[^\n]*\n\n<slack>/)
   assert.match(slackFollowUpPrompt({ ...talk, services: [{ name: 'notion', label: 'Notion', writes: false }] }), /Tools this turn: Notion \(they only read\)\./)
+})
+
+test('Slack prompts: guide someone to link their own tool when they have not, and use only their access', () => {
+  const p = slackSessionPrompt({ ...talk, linkable: ['linear', 'notion'] })
+  assert.match(p, /hasn't linked their Linear and Notion yet[\s\S]*node deploy\/ctl\.mjs link <linear\|notion> <their Slack id>[\s\S]*use their own access, never anyone else's/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /hasn't linked their/) // nothing to link → no note
+  assert.match(slackFollowUpPrompt({ ...talk, linkable: ['google'] }), /hasn't linked their Google Workspace yet/)
+  assert.doesNotMatch(slackFollowUpPrompt(talk), /hasn't linked their/)
 })
 
 test('prompts: on GitHub the tools come only to an admin’s turn, which is told the thread is public', () => {

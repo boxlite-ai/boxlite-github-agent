@@ -31,7 +31,7 @@ import { slackSessionPrompt, slackFollowUpPrompt } from './codex.mjs'
  * — the controller's GitHub side of a PR. `commands.run(cmd, { isAdmin, who, by, reply, help, post })`
  * runs a command on the controller's state and posts its answer (then restarts, for a /deploy).
  */
-export async function slackChannel({ tokens, cfg, slackState, persist, schedule, track, draining, jobs, bl, proxyUrl, logins, policy, turnCfg, status, log, prs, commands }) {
+export async function slackChannel({ tokens, cfg, slackState, persist, schedule, track, draining, jobs, bl, proxyUrl, userLogins, policy, turnCfg, status, log, prs, commands }) {
   const sk = slack(tokens.bot)
   // Who we are is whoever the bot token belongs to: its bot user is the one people mention.
   const me = await sk.call('auth.test')
@@ -145,11 +145,13 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     const key = slackThreadKey(req)
     try {
       const known = slackState.threads[key]?.sessionId ? slackState.threads[key] : null
-      const [asker, files, names] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), Promise.all(Object.values(logins).map((l) => l.load()))])
-      const services = enabledServices(logins, policy)
+      // Each person uses their OWN tool logins (userlogins.mjs): the bot only reads what they can.
+      const [asker, files, names, userLog] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), userLogins.forUser(req.user)])
+      const services = enabledServices(userLog, policy)
+      const linkable = Object.keys(userLogins.kinds).filter((name) => !userLog[name]?.ready()) // could bind, hasn't
       const prsNow = await prs.status()
-      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, prs: prsNow }
-      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name) } // what its token opens
+      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, linkable, prs: prsNow }
+      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name), logins: userLog } // what its token opens, as this person
       // A PR is planned only when the box asks for it, for the request's own branch (publish.mjs).
       if (prsNow.ok) job.pr = { grant: (want) => grantPr(want, job, `${key}@${req.ts}`) }
       const fresh = async () => slackSessionPrompt({ ...talk, history: await transcript(req) })

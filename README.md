@@ -6,8 +6,8 @@ install on GitHub: it's a regular GitHub account. Each request runs
 [Codex CLI](https://github.com/openai/codex) in that thread's own [BoxLite](https://boxlite.ai)
 microVM, with a full shell and network, so it can run the code before it answers. Slack gets all of
 that too, draft PRs and the admin commands included. There it also gets the files attached to a
-message, and it can read your team's Linear, Notion and Google Workspace as its own accounts, and
-comment and file things in Linear and Notion.
+message, and it can read your team's Linear, Notion and Google Workspace — in Slack as the person
+asking, so only what they can see — and comment and file things in Linear and Notion.
 
 ```
 @boxliteai why does `npm test` fail on this PR?                        (GitHub)
@@ -36,7 +36,7 @@ comment and file things in Linear and Notion.
 - **Slack needs no public URL.** The controller dials out to Slack (Socket Mode).
 - **The team's tools go through the controller too.** Linear, Notion and Google Workspace reach
   Codex as MCP servers on the controller, behind the same job token. The controller checks every
-  call against the tools you allow and swaps in the bot's own login. See
+  call against the tools you allow and swaps in the right login — in Slack the asker's own. See
   [Linear, Notion and Google Workspace](#linear-notion-and-google-workspace).
 
 ### One mention, start to finish
@@ -71,7 +71,7 @@ team's conversations. So the two sides share nothing a box can reach:
 | Its box | `botlite-gh-acme-app-7-<hash>` | `botlite-slack-dm-alice-0922-<hash>`, `botlite-slack-backend-bob-0922-<hash>` |
 | Its volume | `botlite-context` (`VOLUME`) | `botlite-slack-context` (`SLACK_VOLUME`) |
 | Its context key comes from | `CONTEXT_SECRET` | `SLACK_CONTEXT_SECRET` |
-| The team's tools | only when one of the bot's admins asks | yes |
+| The team's tools | only when one of the bot's admins asks (the bot's shared login) | each person, on the login they linked themselves |
 | Who may ask for a PR | the bot's admins, the repo's maintainers, people an admin added | every member, into any public repo (`SLACK_PR_REPOS`) |
 | Who runs the commands | the bot's admins (`BOT_ADMINS`) | the workspace's owners and admins |
 
@@ -191,16 +191,20 @@ only**:
 
 ## Linear, Notion and Google Workspace
 
-Slack turns get these tools, and so do GitHub turns when one of the bot's admins asks. On GitHub
-the thread is public, and Codex is told so: whatever it reads, it's asked to put only what the
-request needs in its answer. Each service is off until its login is in place. Give each one a **bot
-account**: every call acts as that account, and anyone who can ask the bot can read whatever it
-can read. So share with it only what everyone who can ask may see.
+On Slack, **each person links their own Linear, Notion and Google Workspace**, and a turn uses the
+requester's own login — so the bot reads only what that person can already see, and no one's private
+data reaches anyone else through it. Someone who hasn't linked a service simply can't use it, and
+the bot tells them how. On GitHub the thread is public and the tools come only to one of the bot's
+admins, on the bot's **own shared login**; Codex is told the thread is public, so what it reads
+stays out of the answer. Each service is off for a person until their login is in place — link one
+only where the account is yours to link, and share with the bot's own (GitHub) login only what
+everyone who can ask there may see.
 
 **How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
 service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
-the controller checks the call, swaps in the bot's own login, and forwards it to the service's
-official MCP server — the swap the same idea as a write turn's git push (gitpush.mjs).
+the controller checks the call, swaps in the right login — the asker's own on Slack, the bot's on
+GitHub — and forwards it to the service's official MCP server (the same pattern as a write turn's
+staging push, where the box pushes through the controller and never holds the token).
 
 ```mermaid
 sequenceDiagram
@@ -212,7 +216,7 @@ sequenceDiagram
     Note over B: no credentials —<br/>only this turn's job token
     B->>C: POST /mcp/linear (Bearer job token)<br/>tools/call save_issue
     Note over C: verify the token · was this turn<br/>given linear? · is the login in place? ·<br/>is save_issue on the policy list? ·<br/>under the 10-change / 60-call budget?
-    C->>S: the same call + the bot's Linear login
+    C->>S: the same call + the asker's own login<br/>(the bot's, on GitHub)
     S-->>C: result
     C-->>B: result (MCP headers only, no vendor cookies)
     Note over C: logs who · thread · tool,<br/>counts the change
@@ -224,7 +228,7 @@ spent budget — so a public GitHub thread can't reach a tool its turn never got
 call one you didn't list, however it's asked. One real Slack request ("file a Linear issue and
 create a Notion page"), as the controller logged it:
 
-```
+```text
 linear list_teams                       (read: find a team)
 notion notion-fetch                     (read)
 linear save_issue (a change)            → the issue
@@ -235,13 +239,20 @@ answered Dorian, changed: Linear save_issue · Notion notion-create-pages
 
 | | Linear | Notion | Google Workspace |
 |---|---|---|---|
-| The bot's account | a member for the bot | a member or guest for the bot | a Workspace user, like `botlite@yourco.com` |
 | What it sees | what that member sees | the pages shared with it | files and calendars shared with it |
-| Hand it over | `LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs linear-key` | `node deploy/ctl.mjs notion-login` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs google-login` |
+| A Slack person links their own | `LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs link linear <their Slack id>` | `node deploy/ctl.mjs link notion <their Slack id>` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
+| The bot's shared login (GitHub admins) | `… node deploy/ctl.mjs linear-key` | `node deploy/ctl.mjs notion-login` | `… node deploy/ctl.mjs google-login` |
 | Lasts | until you revoke the key | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
 
-- **Linear:** create the API key as the bot's member, restricted to the permissions you allow.
-- **Notion:** the login opens a browser. Approve it as the bot's account; nothing to set up first.
+**Linking a Slack person** binds their own token, keyed to their Slack id — the `U…` in the log's
+`request from … (U…)`. The person completes any browser consent themselves, so it's their access
+being bound, and the operator never sees a Notion/Google token. `node deploy/ctl.mjs links` lists
+who's bound; `node deploy/ctl.mjs unlink <service> <id>` removes one. When someone asks for a tool
+they haven't linked, the bot tells them to link it first and does nothing else with it.
+
+- **Linear:** the person creates the API key on their own member, restricted to the permissions you
+  allow (Read plus, for changes, Create issues / Create comments — not full Write).
+- **Notion:** the login opens a browser. The person approves it as themselves; nothing to set up first.
 - **Google:** the Workspace MCP servers are in a
   [Developer Preview](https://developers.google.com/workspace/guides/configure-mcp-servers). Join it,
   then in a Cloud project enable the Drive, Docs, Sheets, Slides and Calendar APIs and their MCP
@@ -255,8 +266,8 @@ The logins run on your machine and hand the tokens to the controller. Your machi
 refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as
 shipped, comments and issues in Linear (`save_issue` edits issues too) and comments and new pages in
 Notion. Nothing deletes, moves, shares or overwrites, and nothing changes Google files. A change is
-made as the bot, for anyone who may ask, and can be prompted by anything written in the thread. The
-ones on offer:
+made as whoever's login the turn uses — the asker on Slack, the bot on GitHub — and can be prompted
+by anything written in the thread. The ones on offer:
 
 | Service | Change tools | Notes |
 |---|---|---|

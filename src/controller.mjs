@@ -54,7 +54,8 @@ import { planWrite, planSlackWrite, publishWrite } from './publish.mjs'
 import { selfBuild, deployPlan, markGood, goodBuild, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS, TRIAL_TURN, trialTurnFailure } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
-import { toolBroker, enabledServices } from './tools.mjs'
+import { toolBroker, enabledServices, SERVICES } from './tools.mjs'
+import { userLogins } from './userlogins.mjs'
 import { keyLogin, oauthLogin } from './oauth.mjs'
 import { TOOLS, SLACK_PR_REPOS } from './policy.mjs'
 import { tally } from './slack-reply.mjs'
@@ -163,13 +164,19 @@ const webhook = webhookHandler({
 })
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
 const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn asking for its PR's push
-// The bot's own logins to the team's tools, each optional: a service is on while its login is in place.
+// The team's tools. On GitHub the bot uses its OWN shared logins, for admins only (each optional: a
+// service is on while its login is in place). In Slack each person uses their OWN login, bound with
+// `ctl link` and kept per user (userlogins.mjs) — so the bot only ever reads what the asker can.
 const logins = {
   linear: keyLogin(async () => first('LINEAR_API_KEY', 'BOXLITE_SECRET_LINEAR') || (await readSecretFile('linear-api-key'))),
   notion: oauthLogin({ name: 'Notion', file: path.join(stateDir, 'notion-oauth.json') }),
   google: oauthLogin({ name: 'Google', file: path.join(stateDir, 'google-oauth.json') }),
 }
-const tools = toolBroker({ secret: jobSecret, jobs, logins, policy: TOOLS, log })
+// Each distinct tool login and how it's stored per user: Linear is a key, the rest OAuth.
+const loginKinds = Object.fromEntries([...new Set(Object.values(SERVICES).map((s) => s.login))].map((n) => [n, n === 'linear' ? 'key' : 'oauth']))
+const userTools = userLogins({ dir: path.join(stateDir, 'user-logins'), kinds: loginKinds })
+const tools = toolBroker({ secret: jobSecret, jobs, policy: TOOLS, log }) // whose login a turn uses is set on its job
+
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
 const running = () => modelOf(state, { model: cfg.model, effort: cfg.effort })
 /** The config one turn runs on: the deploy's, with the model and effort of the moment. */
@@ -355,7 +362,9 @@ async function handle(req) {
     // The team's tools on GitHub only for the bot's admins: anyone can ask here, and the answer is
     // public (the prompt says so, too).
     const services = admins.has(req.userId) ? (await Promise.all(Object.values(logins).map((l) => l.load())), enabledServices(logins, TOOLS)) : []
-    const job = { who: `@${req.author}`, writes: [], tools: services.map((s) => s.name) } // what its token opens
+    // On GitHub the tools are the bot's own shared logins (admins only); `job.logins` is what the
+    // broker uses for this turn (tools.mjs), the same field a Slack turn fills with the asker's own.
+    const job = { who: `@${req.author}`, writes: [], tools: services.map((s) => s.name), logins } // what its token opens
     const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write, services })
     const prompt = known?.sessionId
       ? followUpPrompt({ login: cfg.login, req, pr, headMoved: Boolean(pr && known.headSha && known.headSha !== pr.headSha), write, services })
@@ -579,7 +588,7 @@ async function connectSlack() {
     await rename(handed, path.join(stateDir, 'slack-state.imported.json'))
     log(`slack: took in the Slack agent's memory: ${Object.keys(state.slack.threads).length} threads, ${state.slack.deferred.length} requests kept for us`)
   }
-  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, logins, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
+  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, userLogins: userTools, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
   if (draining) return true // shutting down meanwhile: the next controller connects
   slackBot = channel
   lastSlack = Date.now() // the trial and /healthz count Slack from its start

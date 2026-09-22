@@ -228,6 +228,47 @@ if (cmd === 'status') {
   const file = `~/.botlite/${cmd === 'notion-login' ? 'notion' : 'google'}-oauth.json`
   const r = await sh(`umask 077 && mkdir -p ~/.botlite && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, JSON.stringify(login))
   report(r, `linked${login.account ? ` as ${login.account}` : ''} and handed to the controller — on from the next request`)
+} else if (cmd === 'link' || cmd === 'unlink' || cmd === 'links') {
+  // A Slack person's OWN tool token, kept per user: the bot uses it only for that person's requests
+  // (src/userlogins.mjs), so it reads only what they can. `link` runs the same key/OAuth flow as the
+  // shared handovers, but stores under the user id. The person themselves should complete any browser
+  // consent — it's their access being bound. `<user>` is their Slack id (the `U…` in the log lines).
+  const root = '~/.botlite/user-logins'
+  if (cmd === 'links') {
+    const r = await read(`find ${root} -type f ! -name '*.live.json' 2>/dev/null | sed 's#.*/user-logins/##' | sort`)
+    console.log(r.out || 'no user tokens linked')
+  } else {
+    const [service, user] = process.argv.slice(3)
+    if (!['linear', 'notion', 'google'].includes(service) || !/^[A-Za-z0-9_-]{1,64}$/.test(user ?? '')) {
+      console.error(`usage: node deploy/ctl.mjs ${cmd} <linear|notion|google> <slack-user-id>`)
+      process.exit(2)
+    }
+    const file = `${root}/${service}/${user}`
+    if (cmd === 'unlink') {
+      report(await sh(`rm -f ${file} ${file}.live.json && echo removed`), `unlinked ${service} for ${user}`)
+    } else {
+      let payload
+      if (service === 'linear') {
+        const key = process.env.LINEAR_API_KEY ?? ''
+        if (!/^lin_api_\S+$/.test(key)) {
+          console.error("set LINEAR_API_KEY (that person's own Linear API key, lin_api_…)")
+          process.exit(2)
+        }
+        payload = `${key}\n`
+      } else if (service === 'notion') {
+        payload = JSON.stringify(await notionLogin())
+      } else {
+        const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env
+        if (!clientId || !clientSecret) {
+          console.error('set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (the OAuth client — see the README)')
+          process.exit(2)
+        }
+        payload = JSON.stringify(await googleLogin({ clientId, clientSecret, scopes: googleScopes(TOOLS) }))
+      }
+      const r = await sh(`umask 077 && mkdir -p ${root}/${service} && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, payload)
+      report(r, `linked ${service} for ${user} — that person's own requests use it from the next one`)
+    }
+  }
 } else if (cmd === 'rollback') {
   if (!/^[0-9a-f]{7,40}$/.test(arg || '')) {
     console.error('usage: node deploy/ctl.mjs rollback <commit sha on the tracked branch>')
@@ -240,6 +281,6 @@ if (cmd === 'status') {
   if (r && r.code !== 0) process.exit(1)
   if (wait) await waitLive({ starts, want: arg, exact: true })
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | linear-key | notion-login | google-login  (restart, admins, rollback: [--wait] [--includes <sha>])')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | linear-key | notion-login | google-login | link <service> <user> | unlink <service> <user> | links  (restart, admins, rollback: [--wait] [--includes <sha>])')
   process.exit(2)
 }
