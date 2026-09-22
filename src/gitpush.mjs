@@ -80,9 +80,18 @@ export function gitPushHandler({ secret, jobs, upstream = 'https://github.com', 
       }
       const up = await fetchImpl(`${upstream}/${repo}.git/${advert ? 'info/refs?service=git-receive-pack' : 'git-receive-pack'}`, { method: req.method, headers, body })
       res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/octet-stream' })
-      if (up.body) for await (const chunk of up.body) res.write(chunk)
+      // A refused ref still comes back 200: git reports it inside the body (`ng <ref> <reason>`).
+      let tail = Buffer.alloc(0)
+      if (up.body) {
+        for await (const chunk of up.body) {
+          res.write(chunk)
+          if (push) tail = Buffer.concat([tail, chunk]).subarray(-4096)
+        }
+      }
       res.end()
-      if (push) log(`${claims.thread}: pushed ${grant.ref} to ${repo} (${up.status})`)
+      const refused = push && /\bng (refs\/\S+) ([^\n\0]+)/.exec(tail.toString('latin1'))
+      if (refused) log(`${claims.thread}: ${repo} refused the push of ${refused[1]}: ${refused[2]}`)
+      else if (push) log(`${claims.thread}: pushed ${grant.ref} to ${repo} (${up.status})`)
     } catch (e) {
       log(`git push (${claims.thread}): ${e.message}`)
       if (!res.headersSent) send(res, 502, `the push couldn't go through: ${e.message.slice(0, 200)}`)

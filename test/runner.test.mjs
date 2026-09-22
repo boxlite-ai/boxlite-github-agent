@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createDecipheriv, randomBytes } from 'node:crypto'
-import { CODEX_VERSION } from '../src/codex.mjs'
+import { CODEX_VERSION, codexConfig } from '../src/codex.mjs'
 import { jobTokens } from '../src/chatgpt.mjs'
 import { gitPushHandler } from '../src/gitpush.mjs'
 import { gitServer } from './gitserver.mjs'
@@ -114,6 +114,27 @@ test('runner: agent-tooling goes into every box — added once, refreshed when i
   // Its hooks' state lives in the checkout; git never picks it up (so a PR can't carry it).
   assert.equal(readFileSync(path.join(ctx, 'repo', '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l === '.agents/state/').length, 1)
   assert.equal(box(path.join(root, 'box-off'), 'no tooling', { ...own, AGENT_TOOLING: 'off' }).result.tooling, null)
+})
+
+test('runner: every codex in the box goes through the controller — the routing is in config.toml, around agent-tooling’s settings', () => {
+  const ctx = path.join(root, 'box-config')
+  const own = { SNAPSHOT: path.join(root, 'vol-config', 'context.sealed') }
+  mkdirSync(path.join(ctx, 'codex'), { recursive: true })
+  // What agent-tooling's install leaves (seen with Codex 0.155.1), after an earlier turn's routing.
+  const agentTooling = '[marketplaces.boxlite-agent-tooling]\nsource_type = "git"\nsource = "https://github.com/boxlite-ai/agent-tooling.git"\nref = "main"\n\n[plugins."boxlite-agent-tooling@boxlite-agent-tooling"]\nenabled = true'
+  writeFileSync(path.join(ctx, 'codex', 'config.toml'), `model_provider = "botlite"\nchatgpt_base_url = "https://old.example/backend-api/"\n\n${agentTooling}\n\n[model_providers.botlite]\nname = "botlite"\nbase_url = "https://old.example/backend-api/codex"\n`)
+  const config = () => readFileSync(path.join(ctx, 'codex', 'config.toml'), 'utf8')
+  const count = (re) => (config().match(re) ?? []).length
+  for (const proxy of ['https://proxy.example', 'https://moved.example']) {
+    const { result } = box(ctx, 'q', { ...own, CODEX_CONFIG: JSON.stringify(codexConfig(proxy)) })
+    assert.equal(result.code, 0)
+    assert.equal(count(/^model_provider = "botlite"$/gm), 1)
+    assert.equal(count(/^\[model_providers\.botlite\]$/gm), 1)
+    assert.equal(count(/old\.example/g), 0)
+    assert.equal(config().split(`"${proxy}/backend-api/codex"`).length - 1, 1)
+    assert.ok(config().includes(agentTooling), config()) // agent-tooling's own settings, untouched
+    assert.ok(config().indexOf('chatgpt_base_url') < config().indexOf('['), 'top-level keys come before any table')
+  }
 })
 
 test('runner: Codex runs on the stand-in login — the job token, no API key — which is never saved', () => {

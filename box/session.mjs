@@ -123,6 +123,35 @@ function ensureAgentTooling() {
   }
 }
 
+/**
+ * The controller's model routing (CODEX_CONFIG, from src/codex.mjs) in CODEX_HOME's config.toml,
+ * so every codex this turn starts goes through the controller — agent-tooling's hooks start their
+ * own, which the flags on ours never reach. agent-tooling keeps its settings in the same file, so
+ * ours goes around them: our keys first, our table last (TOML wants top-level keys before any
+ * table). Last turn's are found by what they are, not by comments a rewrite could drop.
+ */
+function writeCodexConfig() {
+  if (!E.CODEX_CONFIG) return
+  const { top, table } = JSON.parse(E.CODEX_CONFIG)
+  const file = path.join(CTX, 'codex', 'config.toml')
+  let text = ''
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    /* no config yet */
+  }
+  const ours = new Set(top.split('\n').map((l) => l.split('=')[0].trim()))
+  let section = null // the table a line is in; null before the first one
+  const theirs = text.split('\n').filter((line) => {
+    const header = /^\s*\[+\s*([^\]]+?)\s*\]+/.exec(line)
+    if (header) section = header[1]
+    if (section === 'model_providers.botlite' || /^# botlite\b/.test(line)) return false
+    return !(section === null && ours.has(line.split('=')[0].trim()))
+  })
+  const body = theirs.join('\n').trim()
+  writeFileSync(file, `# botlite: the controller's routing (box/session.mjs), rewritten every turn\n${top}\n\n${body ? `${body}\n\n` : ''}${table}\n`)
+}
+
 /** Clone once; a PR's checkout follows its head (fresh commits → fresh tree), an issue's stays put. */
 function checkout() {
   if (!existsSync(path.join(REPO_DIR, '.git'))) sh('git', ['clone', '--quiet', '--filter=blob:none', `https://github.com/${E.REPO}.git`, REPO_DIR])
@@ -162,7 +191,7 @@ function pushCommits() {
     })
     return { pushed: head, uncommitted }
   } catch (e) {
-    return { pushed: null, error: String(e.stderr || e.message).trim().slice(-300) }
+    return { pushed: null, error: String(e.stderr || e.message).trim().slice(-2000) } // the controller picks the reason out
   }
 }
 
@@ -214,6 +243,7 @@ async function main() {
     writeAuth()
     ensureCodex(E.CODEX_VERSION)
     result.tooling = ensureAgentTooling()
+    writeCodexConfig() // after agent-tooling: its commands may rewrite the file
     checkout()
     excludeToolingState()
     if (E.PUSH_REF) startFromBase()

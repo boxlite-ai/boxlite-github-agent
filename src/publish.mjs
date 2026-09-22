@@ -175,6 +175,22 @@ function prBody({ body, req, flagged, sensitive }) {
 }
 
 /**
+ * Why the box's push failed, for a public reply: the reason git reports, never its raw output,
+ * which names the controller's URL. A workflow file refused says what the operator can do about
+ * the usual cause (the fork behind upstream on it, which the token can't sync without that scope).
+ */
+export function pushFailure(error) {
+  const text = String(error || '')
+  const workflow = /refusing to allow a GitHub App to create or update workflow `([^`]+)`/.exec(text)
+  if (workflow) return `GitHub refused my push because it touches the workflow \`${workflow[1]}\`, which I may not write. If that's upstream's change my fork hasn't caught up with, the bot's operator can fix it: give the bot's GitHub token the \`workflow\` scope`
+  const refused = /\[(?:remote )?rejected\][^(\n]*\(([^)\n]+)\)/.exec(text)
+  if (refused) return `GitHub refused my push (${refused[1]})`
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const line = lines.find((l) => /^(error|fatal):/.test(l)) ?? lines.at(-1) ?? ''
+  return `my push failed (${line.replace(/\bhttps?:\/\/\S+/g, '…').slice(0, 200)})`
+}
+
+/**
  * After the turn — its job token already revoked, so nothing can move the staging branch any
  * more. `result` is the runner's own report ({ pushed, uncommitted, error }), a hint only: the
  * staging ref on GitHub is what counts. `refuse` (a reason) cleans up without publishing.
@@ -193,7 +209,7 @@ export async function publishWrite({ gh, app, me, plan, req, result, refuse = nu
   try {
     if (refuse) return `⚠️ Not published: ${refuse}.`
     const sha = await tipOf(gh, fork, plan.staging)
-    if (!sha) return `⚠️ Nothing was published${result?.error ? `: the push failed (${result.error})` : ''}.`
+    if (!sha) return `⚠️ Nothing was published${result?.error ? `: ${pushFailure(result.error)}` : ''}.`
     const compare = await gh.json('GET', `/repos/${fork}/compare/${plan.base}...${sha}`)
     const tree = (await gh.json('GET', `/repos/${fork}/git/commits/${sha}`)).tree.sha
     const changed = (compare.files ?? []).filter((f) => f.status !== 'removed').map((f) => f.filename)

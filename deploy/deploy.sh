@@ -72,6 +72,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   grep -Eq '(^|[ ,])(repo|delete_repo)(,|$)' <<<"$scopes" && die "token has more scopes than the bot should hold (has:$scopes) — use a classic PAT with notifications + public_repo"
   grep -Eq '(^|[ ,])notifications(,|$)' <<<"$scopes" || die "token lacks the notifications scope (has:$scopes) — use a classic PAT"
   grep -Eq '(^|[ ,])public_repo(,|$)' <<<"$scopes" || die "token lacks the public_repo scope (has:$scopes)"
+  grep -Eq '(^|[ ,])workflow(,|$)' <<<"$scopes" || echo "  ⚠ token lacks the workflow scope — a fork can't catch up with an upstream that changed a workflow, and PRs from it fail"
   echo "  @$login ·$scopes"
 else
   echo "  not given — the controller will wait for it (GITHUB_TOKEN=… node deploy/ctl.mjs github-token)"

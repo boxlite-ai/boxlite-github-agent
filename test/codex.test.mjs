@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { codexArgs, applyEvent, newRun, newSessionPrompt, followUpPrompt } from '../src/codex.mjs'
+import { codexArgs, codexConfig, applyEvent, newRun, newSessionPrompt, followUpPrompt } from '../src/codex.mjs'
 
 const base = { cwd: '/ctx/repo', outFile: '/ctx/last.md', proxyUrl: 'https://8788-d-abc.proxy.boxlite.ai/' }
 
@@ -25,6 +25,18 @@ test('codexArgs: a new session runs in the checkout; a resume names the session;
 test('codexArgs: needs a proxy url, and refuses one that could break out of the TOML string', () => {
   assert.throws(() => codexArgs({ ...base, proxyUrl: 'http://x" , base_url = "http://evil' }), /bad proxy url/)
   assert.throws(() => codexArgs({ ...base, proxyUrl: undefined }), /bad proxy url/)
+})
+
+test('codexConfig: the same routing as the flags, for config.toml — top-level keys, then the provider table', () => {
+  const { top, table } = codexConfig('https://proxy.example/')
+  assert.equal(top, 'model_provider = "botlite"\nchatgpt_base_url = "https://proxy.example/backend-api/"\ncli_auth_credentials_store = "file"')
+  assert.equal(table, '[model_providers.botlite]\nname = "botlite"\nbase_url = "https://proxy.example/backend-api/codex"\nwire_api = "responses"\nrequires_openai_auth = true')
+  assert.ok(!top.includes('[')) // no table in the part that goes before agent-tooling's
+  assert.throws(() => codexConfig('https://x.example/"\n[evil]'), /bad proxy url/)
+  // The job token rides every request: plain http only to this machine.
+  assert.throws(() => codexConfig('http://proxy.example'), /bad proxy url/)
+  assert.throws(() => codexConfig('http://127.0.0.1.evil.example'), /bad proxy url/)
+  assert.doesNotThrow(() => codexConfig('http://127.0.0.1:8788'))
 })
 
 test('codexArgs: a reasoning effort becomes model_reasoning_effort; neither it nor the model can inject config', () => {

@@ -23,7 +23,7 @@ the code before it answers.
   network, live web search. The microVM is the boundary, and nothing worth stealing is ever inside it.
 - **Every box runs [agent-tooling](https://github.com/boxlite-ai/agent-tooling),** BoxLite's shared
   Codex plugin with its skills, auditors and hooks. It's refreshed to the tip of `main` when it's
-  over 10 minutes old.
+  over 10 minutes old. The Codex runs its hooks start go through the controller too.
 - **Only the controller holds credentials.** Codex runs on a stand-in login whose token works only
   on the controller's proxy, and only until the turn ends.
 - **PRs only for people who may ask.** Codex commits in its box; the controller checks the change
@@ -43,8 +43,8 @@ is attached to. It stops the box as soon as the turn ends, then posts the reply.
 Live state (the checkout and `CODEX_HOME`) stays on the box's own disk, since the S3-backed volume
 has no rename or append. After every turn it's sealed with AES-256-GCM under a key derived for that
 thread and written to `sessions/<owner>/<repo>/<n>/` on the volume. Every box mounts the whole
-volume, but only that thread's box gets the key. Stopped boxes are deleted after `BOX_TTL_DAYS`; the
-next mention restores into a new one.
+volume, but only that thread's box gets the key. A stopped box is deleted 15 seconds later
+(`BOX_DELETE_SEC`); the next mention restores into a new one.
 
 ### Opening a PR
 
@@ -150,8 +150,9 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
 - **BoxLite key:** it must be able to create boxes. If it can't create volumes, create
   `botlite-context` in the dashboard first.
 - **GitHub token:** a *classic* PAT on the bot's own account with `notifications` + `public_repo`
-  (the notifications API rejects fine-grained tokens). Not `repo`, which reaches private repos:
-  the deploy refuses it. The bot is whoever the token belongs to.
+  + `workflow` (the notifications API rejects fine-grained tokens). `workflow` lets the bot's forks
+  catch up with an upstream that changed a workflow; without it, PRs from such a fork fail. Not
+  `repo`, which reaches private repos: the deploy refuses it. The bot is whoever the token belongs to.
 - **Push App (PR writing):** a GitHub App of its own, separate from the webhook App. Give it
   *Repository permissions → Contents: Read and write* and nothing else, with no webhook. Install it
   on the bot's account for *all repositories*, so new forks are covered, generate a private key,
@@ -203,7 +204,7 @@ The controller reads these from its environment; `deploy.sh` passes `VOLUME`, `C
 | `DAILY_LIMIT_PER_USER` | `20` | requests per GitHub user per UTC day; the bot's admins have no limit |
 | `JOB_TIMEOUT_MIN` | `20` | wall-clock limit of one turn |
 | `HANG_MIN` | `10` | the watchdog kills a controller that makes no progress this long |
-| `BOX_TTL_DAYS` | `3` | a stopped session box is deleted after this |
+| `BOX_DELETE_SEC` | `15` | a stopped session box is deleted this many seconds later (BoxLite's `auto_delete`; there's no auto-stop, since the controller stops each box after its turn) |
 | `PORT` / `PUBLIC_URL` | `8788` / looked up | the proxy's port and public origin |
 | `BOXLITE_URL` | `https://api.boxlite.ai` | BoxLite API |
 
@@ -229,8 +230,9 @@ BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (nee
 - **Public repos only, and PRs only on request.** It opens draft PRs from its own fork, only for
   the people above, and never pushes to anyone else's branch.
 - **Forks that fall behind.** Before a push the controller syncs the fork with upstream. If
-  upstream changed a workflow file since the last sync, GitHub may refuse that sync unless the bot's
-  PAT also has the `workflow` scope; the turn then says the push failed.
+  upstream changed a workflow file since the last sync, GitHub refuses that sync unless the bot's
+  PAT has the `workflow` scope, and then refuses the push, which would bring that change in. The
+  reply says which workflow and what the operator can do.
 - **A personal ChatGPT plan serves everyone.** OpenAI's terms may not allow a consumer login to be
   used this way; an API key is the sanctioned route for a public service.
 - **Codex's private backend.** The model path depends on ChatGPT's Codex backend and Codex's login
