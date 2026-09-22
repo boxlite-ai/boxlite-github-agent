@@ -37,7 +37,7 @@ test('scheduler: at most `max` jobs at once across threads', async () => {
 test('state: defaults when missing, round-trips, owner-only file', async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'state-')), 'state', 'state.json')
   const s = await loadState(file)
-  assert.deepEqual({ ...s, seen: [...s.seen], slack: { ...s.slack, seen: [...s.slack.seen] } }, { unknown: {}, lastModified: null, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null, slack: { seen: [], threads: {}, usage: {}, deferred: [] } })
+  assert.deepEqual({ ...s, seen: [...s.seen], slack: { ...s.slack, seen: [...s.slack.seen] } }, { unknown: {}, lastModified: null, polledAt: null, sweeps: {}, seen: [], threads: {}, usage: {}, grants: {}, paused: null, forks: {}, codex: null, deploy: null, slack: { seen: [], threads: {}, usage: {}, deferred: [] } })
   s.seen.add('ic:1')
   s.threads['acme/app#7'] = { sessionId: 's1', boxId: 'b1' }
   s.lastModified = 'T1'
@@ -46,11 +46,13 @@ test('state: defaults when missing, round-trips, owner-only file', async () => {
   s.forks['acme/app'] = 'botlite/app'
   s.codex = { model: 'gpt-6-astra', effort: 'xhigh', by: 'root', at: 'T2' }
   s.deploy = { from: 'a', to: 'b', by: 'root', at: 'T3', reply: { repo: 'acme/bot', number: 7, kind: 'comment', commentId: 1 } }
+  s.polledAt = '2026-09-22T10:20:09Z'
+  s.sweeps['acme/bot#7'] = { repo: 'acme/bot', number: 7, since: '2026-09-22T10:20:09Z' } // a second look outlives a restart
   await saveState(file, s)
   const again = await loadState(file)
   assert.deepEqual([...again.seen], ['ic:1'])
   assert.deepEqual(again.threads, { 'acme/app#7': { sessionId: 's1', boxId: 'b1' } })
-  assert.deepEqual([again.grants, again.paused, again.forks, again.codex, again.deploy], [s.grants, s.paused, s.forks, s.codex, s.deploy])
+  assert.deepEqual([again.grants, again.paused, again.forks, again.codex, again.deploy, again.polledAt, again.sweeps], [s.grants, s.paused, s.forks, s.codex, s.deploy, s.polledAt, s.sweeps])
   assert.equal(statSync(file).mode & 0o777, 0o600)
 })
 

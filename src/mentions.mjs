@@ -3,6 +3,7 @@
 // asks for, then read each thread's new comments ourselves and keep the ones addressed to us.
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const MAX_SWEEP_TRIES = 30 // a second look that keeps failing gives up after this many polls (about half an hour)
 
 /** Does `body` address @login? Quoted lines and code are ignored, so quoting an old request never re-runs it. */
 export function mentions(body, login) {
@@ -52,9 +53,9 @@ export async function poll(gh, lastModified) {
  * (the bot's token is `public_repo`). Our own and other bots' comments never count.
  */
 export async function requestsFrom(gh, n, { login, seen, now = Date.now() }) {
-  if (!['Issue', 'PullRequest'].includes(n.subject?.type) || !n.subject.url || n.repository?.private) return []
-  const repo = n.repository.full_name
-  const number = Number(n.subject.url.split('/').pop())
+  const subject = subjectOf(n)
+  if (!subject) return []
+  const { repo, number } = subject
   // Re-read a little before the last read (clock skew); first sight looks back a day. `seen` dedupes.
   const since = new Date(n.last_read_at ? Date.parse(n.last_read_at) - 5 * 60e3 : now - 24 * 3600e3).toISOString()
 
@@ -93,4 +94,67 @@ export async function requestsFrom(gh, n, { login, seen, now = Date.now() }) {
 
 export function markRead(gh, threadId) {
   return gh.json('PATCH', `/notifications/threads/${threadId}`)
+}
+
+/** The public issue or PR a notification is about — null for anything else. */
+function subjectOf(n) {
+  if (!['Issue', 'PullRequest'].includes(n.subject?.type) || !n.subject.url || n.repository?.private) return null
+  return { repo: n.repository.full_name, number: Number(n.subject.url.split('/').pop()) }
+}
+
+/**
+ * One poll's threads, read, and then the threads due a second look; each new request goes to
+ * `accept` (`seen` dedupes). A thread is marked read *before* its comments are read: a comment
+ * that lands meanwhile makes it unread again for the next poll, where marking it read afterwards
+ * would hide that comment for good. `sweeps` (in the state: "repo#n" → { repo, number, since }) are
+ * threads read again from `since` — see sweep().
+ * @returns {boolean} whether every thread could be marked read (if not, keep the poll's cursor)
+ */
+export async function readThreads(gh, { notifications, sweeps, login, seen, accept, log = () => {} }) {
+  let clean = true
+  for (const n of notifications) {
+    try {
+      await markRead(gh, n.id)
+    } catch (e) {
+      clean = false // still unread: the next poll lists it again
+      log(`notification ${n.id} (${n.repository?.full_name}): ${e.message}`)
+      continue
+    }
+    try {
+      for (const req of await requestsFrom(gh, n, { login, seen })) accept(req)
+    } catch (e) {
+      const subject = subjectOf(n)
+      if (subject) sweep(sweeps, subject, n.last_read_at ?? null) // marked read, not read: next time, then
+      log(`notification ${n.id} (${n.repository?.full_name}): ${e.message}`)
+    }
+  }
+  for (const [key, s] of Object.entries(sweeps)) {
+    const n = { subject: { type: 'Issue', url: `https://api.github.com/repos/${s.repo}/issues/${s.number}` }, repository: { full_name: s.repo, private: false }, last_read_at: s.since }
+    try {
+      for (const req of await requestsFrom(gh, n, { login, seen })) accept(req)
+      delete sweeps[key]
+    } catch (e) {
+      // Gone, not ours to read, or refused outright: that won't change. A rate limit (a 429, or a
+      // 403 that says so), GitHub's 5xx or the network will — so next time, for a while.
+      const refused = e.status >= 400 && e.status < 500 && e.status !== 429 && !/rate limit/i.test(e.message)
+      s.tries = (s.tries ?? 0) + 1
+      if (refused || s.tries >= MAX_SWEEP_TRIES) delete sweeps[key]
+      log(`second look at ${key}: ${e.message}${sweeps[key] ? '' : ' — dropped'}`)
+    }
+  }
+  return clean
+}
+
+/**
+ * A second look at a thread at the next poll, at what came in from `since` (ISO; null: the last
+ * day) on — the earliest asked for wins. The bot's own comments need one: GitHub marks a thread
+ * read when the bot comments in it, which hides every mention that arrived since the last poll
+ * (so pass that poll's time) — the "✅ live" a new build posts before its first poll hides what
+ * came in while the last one drained.
+ */
+export function sweep(sweeps, { repo, number }, since) {
+  const key = `${repo}#${number}`
+  const had = sweeps[key]
+  const earliest = !had ? since : had.since === null || since === null ? null : Date.parse(since) < Date.parse(had.since) ? since : had.since
+  sweeps[key] = { repo, number, since: earliest }
 }
