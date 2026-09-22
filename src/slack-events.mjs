@@ -47,6 +47,17 @@ export function isHelp(text, bot) {
 /** The name a person goes by in the workspace. */
 export const displayName = (user) => user?.profile?.display_name || user?.real_name || user?.name || user?.id || 'someone'
 
+/**
+ * The words a new thread's box is named by (session.mjs boxName): where — "dm", or the channel's
+ * name when Slack tells us — who asked first, and the day the thread began (UTC). E.g.
+ * "dm-alice-0922", "backend-bob-0922".
+ */
+export function threadLabel(req, { asker, channel = '' } = {}) {
+  const day = new Date(Number(req.threadTs.split('.')[0]) * 1000).toISOString().slice(5, 10).replace('-', '')
+  const who = asker?.name || displayName(asker) // the handle first: it's usually plain letters
+  return [req.isDM ? 'dm' : channel, who, day].filter(Boolean).join('-')
+}
+
 /** Every user id mentioned (<@U123>) in some Slack texts. */
 export const mentionedIds = (...texts) => [...new Set(texts.flatMap((t) => [...String(t ?? '').matchAll(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1])))]
 

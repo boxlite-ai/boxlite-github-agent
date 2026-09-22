@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { requestFromEvent, isHelp, displayName, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
+import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
 
 const bot = { userId: 'UBOT', botId: 'BBOT', name: 'botlite' }
 const payload = (event, over = {}) => ({ type: 'event_callback', team_id: 'T1', event_id: 'Ev1', event, ...over })
@@ -71,6 +71,16 @@ test('mentionedIds, displayName, tsBefore, permalink', () => {
   const req = { channel: 'C1', ts: '1712345699.000200', threadTs: '1712345699.000200' }
   assert.equal(permalink('https://acme.slack.com/', req), 'https://acme.slack.com/archives/C1/p1712345699000200')
   assert.equal(permalink('https://acme.slack.com', { ...req, threadTs: '1712345678.000100' }), 'https://acme.slack.com/archives/C1/p1712345699000200?thread_ts=1712345678.000100&cid=C1')
+})
+
+test("threadLabel: a thread's box is named for where, who asked first, and the day it began", () => {
+  const alice = { id: 'U1', name: 'alice', profile: { display_name: 'Alice A' } }
+  const thread = { threadTs: '1758537000.000100' } // 2025-09-22 10:30 UTC
+  assert.equal(threadLabel({ ...thread, isDM: true }, { asker: alice }), 'dm-alice-0922')
+  assert.equal(threadLabel({ ...thread, isDM: false }, { asker: alice, channel: 'backend' }), 'backend-alice-0922')
+  assert.equal(threadLabel({ ...thread, isDM: false }, { asker: alice }), 'alice-0922') // Slack wouldn't name the channel
+  assert.equal(threadLabel({ ...thread, isDM: false }, { asker: { id: 'U2', profile: { display_name: 'Bo' } } }), 'Bo-0922') // no handle: the display name
+  assert.equal(threadLabel({ ...thread, isDM: true }, {}), 'dm-someone-0922')
 })
 
 test('threadLine: who said it — the bot itself, a person, an app — with its files', () => {

@@ -16,7 +16,7 @@ const KNOWN = ['lastModified', 'seen', 'threads', 'usage', 'grants', 'paused', '
 /** Slack's memory, apart from GitHub's (slack-channel.mjs): the ids of both could collide. */
 const slackPart = (raw = {}) => ({
   seen: new Set(raw.seen ?? []), // "C…:<ts>" messages handled
-  threads: raw.threads ?? {}, // "T…/C…/<thread ts>" → { sessionId, lastTs, lastUsed }
+  threads: raw.threads ?? {}, // "T…/C…/<thread ts>" → { sessionId, lastTs, lastUsed, label (its box's name) }
   usage: raw.usage ?? {}, // Slack user id → { day: 'YYYY-MM-DD', count }
   deferred: raw.deferred ?? [], // requests accepted by a controller that was shutting down
 })

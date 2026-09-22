@@ -13,7 +13,21 @@ const via = { jobToken: 'job.token.sig', proxyUrl: 'https://8788-d-abc.proxy.box
 test('naming: one stable box, snapshot path and context key per thread', () => {
   assert.equal(boxName('acme/app#7'), boxName('acme/app#7'))
   assert.notEqual(boxName('acme/app#7'), boxName('acme/app#8'))
-  assert.match(boxName('acme/app#7'), /^botlite-[0-9a-f]{20}$/)
+  assert.match(boxName('acme/app#7'), /^botlite-gh-acme-app-7-[0-9a-f]{16}$/) // says which thread it runs
+  // The words read alike, the threads aren't: the hash of the whole key keeps their boxes apart.
+  assert.notEqual(boxName('a-b/c#1'), boxName('a/b-c#1'))
+  assert.equal(boxName('a-b/c#1').replace(/-[0-9a-f]{16}$/, ''), boxName('a/b-c#1').replace(/-[0-9a-f]{16}$/, ''))
+  assert.match(boxName('Acme.Corp/My_App.js#12'), /^botlite-gh-acme-corp-my-app-js-12-[0-9a-f]{16}$/)
+  const long = boxName(`${'o'.repeat(39)}/${'r'.repeat(100)}#1234567`)
+  assert.ok(long.length <= 63, long) // a DNS label's length, should names ever become hostnames
+  assert.match(long, /^botlite-gh-o{32}-[0-9a-f]{16}$/) // the words cut short, the hash whole
+  // Slack's words come with the thread (slack-events.mjs threadLabel); none, and it's the hash alone.
+  const slackKey = 'T01/C01/1712345678.000100'
+  assert.match(boxName(slackKey, { slack: true, label: 'dm-Alice-0922' }), /^botlite-slack-dm-alice-0922-[0-9a-f]{16}$/)
+  assert.match(boxName(slackKey, { slack: true, label: 'José  Núñez!' }), /^botlite-slack-jose-nunez-[0-9a-f]{16}$/)
+  assert.match(boxName(slackKey, { slack: true, label: '郑' }), /^botlite-slack-[0-9a-f]{16}$/)
+  assert.match(boxName(slackKey, { slack: true }), /^botlite-slack-[0-9a-f]{16}$/)
+  assert.equal(boxName(slackKey, { slack: true, label: 'x' }).slice(-16), boxName(slackKey, { slack: true, label: 'y' }).slice(-16))
   assert.equal(snapshotPath('acme/app#7'), '/vol/sessions/acme/app/7/context.sealed')
   assert.equal(Buffer.from(contextKey('master', 'acme/app#7'), 'base64').length, 32)
   assert.notEqual(contextKey('master', 'acme/app#7'), contextKey('master', 'acme/app#8'))
@@ -180,11 +194,11 @@ test('runTurn: a Slack turn — its own box, volume and context key; files on st
     },
   })
   const key = 'T01/C01/1712345678.000100'
-  const out = await runTurn({ bl, cfg, key, prompt: 'P', files: [{ path: 'slack-files/1/a.txt', data: 'aGk=', size: 2, mimetype: 'text/plain' }], tools: [{ name: 'linear', tools: ['get_issue'] }], slack: true, ...via })
+  const out = await runTurn({ bl, cfg, key, label: 'backend-bob-0405', prompt: 'P', files: [{ path: 'slack-files/1/a.txt', data: 'aGk=', size: 2, mimetype: 'text/plain' }], tools: [{ name: 'linear', tools: ['get_issue'] }], slack: true, ...via })
   assert.equal(out.message, 'ok')
   const created = bl.calls.find((c) => c[0] === 'createBox')[1]
-  assert.equal(created.name, boxName(key, { slack: true }))
-  assert.match(created.name, /^botlite-slack-[0-9a-f]{20}$/) // the Slack agent's own names: its boxes carry on
+  assert.equal(created.name, boxName(key, { slack: true, label: 'backend-bob-0405' }))
+  assert.match(created.name, /^botlite-slack-backend-bob-0405-[0-9a-f]{16}$/)
   assert.deepEqual(created.volumes, [{ managed_volume: 'botlite-slack-context', guest_path: '/vol' }]) // never GitHub's volume
   const [, , exec] = bl.calls.find((c) => c[0] === 'startExec')
   assert.equal(exec.env.CONTEXT_KEY, contextKey('slack-master', key)) // the Slack agent's secret, handed over

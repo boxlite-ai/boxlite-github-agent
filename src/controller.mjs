@@ -42,7 +42,7 @@ import { poll, requestsFrom, markRead, standing } from './mentions.mjs'
 import { loadState, saveState, takeQuota, quotaLeft, importSlackState } from './state.mjs'
 import { scheduler } from './jobs.mjs'
 import { boxlite } from './boxlite.mjs'
-import { runTurn, mixedSides } from './session.mjs'
+import { runTurn, mixedSides, boxName } from './session.mjs'
 import { newSessionPrompt, followUpPrompt, CODEX_VERSION } from './codex.mjs'
 import { chatgptLogin, jobTokens, deviceLogin, codexModels } from './chatgpt.mjs'
 import { createProxy } from './proxy.mjs'
@@ -306,7 +306,7 @@ async function turn(key, req, pr, prompt, sessionId, plan, services, job) {
   const jobToken = jobs.issue(12 * 3_600_000, key, job)
   try {
     const run = turnCfg()
-    log(`${key}: turn on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}${services.length ? `, with ${services.map((s) => s.name).join(', ')}` : ''}`)
+    log(`${key}: turn in ${boxName(key)} on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}${services.length ? `, with ${services.map((s) => s.name).join(', ')}` : ''}`)
     const out = await runTurn({ bl, cfg: run, key, req, pr, prompt, tools: services, sessionId, jobToken, proxyUrl, write: plan, log })
     if (out.tooling?.error) log(`${key}: agent-tooling not installed/updated: ${out.tooling.error}`)
     else if (out.tooling) log(`${key}: agent-tooling ${out.tooling.version}`)

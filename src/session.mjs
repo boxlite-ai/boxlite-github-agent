@@ -46,8 +46,19 @@ export function slackThreadKey(req) {
   if (!SLACK_KEY.test(key)) throw new Error(`not a Slack thread: ${key}`) // it becomes a box name and a volume path
   return key
 }
-/** Box names are unique per org: a stable hash of the thread, so a thread always finds its box. */
-export const boxName = (key, { slack = false } = {}) => `botlite-${slack ? 'slack-' : ''}${createHash('sha256').update(key).digest('hex').slice(0, 20)}`
+/**
+ * A thread's box, by a name that says which thread it runs — botlite-gh-acme-app-7-3fa9c1e2d4b6a8c0,
+ * botlite-slack-dm-alice-0922-… — for anyone looking at BoxLite. The words are only for reading;
+ * what makes the name the thread's alone is the hash of its whole key, long enough that nobody can
+ * pick a key (a repo name, say) to land in another thread's box, where that thread's context lies
+ * unsealed while the box lives. A GitHub thread's words are its key; a Slack thread's (`label`)
+ * are kept with the thread, since they come from names that can change.
+ */
+export function boxName(key, { slack = false, label } = {}) {
+  const words = slack ? String(label ?? '') : key.replace('#', '-')
+  const slug = words.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 32).replace(/-+$/, '')
+  return `botlite-${slack ? 'slack' : 'gh'}-${slug ? `${slug}-` : ''}${createHash('sha256').update(key).digest('hex').slice(0, 16)}`
+}
 /** The thread's subdirectory of its volume, e.g. /vol/sessions/acme/app/7 or /vol/sessions/T01/C02/1712345678.000100. */
 export const snapshotPath = (key) => `${VOLUME_PATH}/sessions/${key.replace('#', '/')}/context.sealed`
 /** Per-thread snapshot key: only this thread's box is ever handed it. */
@@ -97,12 +108,13 @@ export async function ensureBox(bl, name, cfg) {
  * branch, through the controller. A Slack turn (`slack`) has a working directory instead of a
  * checkout, and its request's `files` ([{ path, data (base64) }]) travel with the prompt on the
  * exec's stdin, so no other box — and nothing on the volume — ever holds them. `tools` are the
- * team's tool services the turn may use (tools.mjs enabledServices).
+ * team's tool services the turn may use (tools.mjs enabledServices); `label` a Slack thread's words
+ * for its box name (boxName).
  * @returns {{ sessionId, message, error, sessionLost, push }}.
  */
-export async function runTurn({ bl, cfg, key, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, log = () => {} }) {
+export async function runTurn({ bl, cfg, key, label, req, pr, prompt, files = [], tools = [], sessionId, jobToken, proxyUrl, write, slack = false, log = () => {} }) {
   const side = sideOf(key, cfg, { slack })
-  const name = boxName(key, { slack })
+  const name = boxName(key, { slack, label })
   const boxCfg = { ...cfg, volume: side.volume } // its own side's volume, and only that one
   const args = codexArgs({ sessionId, cwd: `${CTX}/${slack ? 'work' : 'repo'}`, outFile: `${CTX}/last-message.md`, proxyUrl, model: cfg.model, effort: cfg.effort, tools })
   const exec = {

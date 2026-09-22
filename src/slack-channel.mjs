@@ -11,12 +11,12 @@
 // event once; a restart must not drop it).
 import { slack } from './slack.mjs'
 import { socketMode } from './slack-socket.mjs'
-import { requestFromEvent, isHelp, displayName, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
+import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan, size } from './slack-events.mjs'
 import { react, reply, say, whisper, tally } from './slack-reply.mjs'
 import { mayUseSlack } from './policy.mjs'
 import { enabledServices } from './tools.mjs'
 import { takeQuota } from './state.mjs'
-import { runTurn, slackThreadKey } from './session.mjs'
+import { runTurn, slackThreadKey, boxName } from './session.mjs'
 import { slackSessionPrompt, slackFollowUpPrompt } from './codex.mjs'
 
 /**
@@ -41,6 +41,12 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     people.set(id, { at: Date.now(), user })
     user.catch(() => people.delete(id))
     return user
+  }
+  /** A channel's name, for its threads' box names — '' when Slack won't say (that takes channels:read, groups:read). */
+  const channelNames = new Map()
+  function channelName(id) {
+    if (!channelNames.has(id)) channelNames.set(id, sk.call('conversations.info', { channel: id }).then((r) => r.channel?.name ?? '', () => ''))
+    return channelNames.get(id)
   }
   /** User id → display name, for everyone given; someone Slack won't tell us about keeps their id. */
   async function namesOf(ids) {
@@ -94,12 +100,12 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
   }
 
   /** One turn with its own job token (see the controller's turn()); `job` is its record — who asked, what it changed. */
-  async function turn(key, prompt, sessionId, files, services, job) {
+  async function turn(key, label, prompt, sessionId, files, services, job) {
     const jobToken = jobs.issue(12 * 3_600_000, key, job)
     try {
       const run = turnCfg()
-      log(`${key}: turn on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}`)
-      return await runTurn({ bl, cfg: run, key, prompt, files, tools: services, sessionId, jobToken, proxyUrl, slack: true, log })
+      log(`${key}: turn in ${boxName(key, { slack: true, label })} on ${run.model ?? "Codex's default model"}${run.effort ? `, ${run.effort} effort` : ''}`)
+      return await runTurn({ bl, cfg: run, key, label, prompt, files, tools: services, sessionId, jobToken, proxyUrl, slack: true, log })
     } finally {
       jobs.revoke(jobToken)
     }
@@ -115,12 +121,14 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name) } // what its token opens
       const fresh = async () => slackSessionPrompt({ ...talk, history: await transcript(req) })
       const prompt = known ? slackFollowUpPrompt({ ...talk, since: await transcript(req, known.lastTs) }) : await fresh()
-      let out = await turn(key, prompt, known?.sessionId, files.saved, services, job)
+      // The thread's box keeps the name it got first, whoever asks now and whatever the channel is called.
+      const label = slackState.threads[key]?.label ?? threadLabel(req, { asker, channel: req.isDM ? '' : await channelName(req.channel) })
+      let out = await turn(key, label, prompt, known?.sessionId, files.saved, services, job)
       if (out.sessionLost) {
         log(`${key}: session ${known.sessionId} is gone; starting over with the whole thread`)
-        out = await turn(key, await fresh(), null, files.saved, services, job)
+        out = await turn(key, label, await fresh(), null, files.saved, services, job)
       }
-      slackState.threads[key] = { sessionId: out.sessionId ?? null, lastTs: req.ts, lastUsed: new Date().toISOString() }
+      slackState.threads[key] = { sessionId: out.sessionId ?? null, lastTs: req.ts, lastUsed: new Date().toISOString(), label }
       persist()
       await req.ack // the 👀 always lands before the answer
       if (out.message) {

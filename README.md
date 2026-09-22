@@ -67,7 +67,7 @@ team's conversations. So the two sides share nothing a box can reach:
 | | GitHub thread | Slack thread |
 |---|---|---|
 | Who can ask | anyone, in public repos | members of your workspace |
-| Its box | `botlite-<hash>` | `botlite-slack-<hash>` |
+| Its box | `botlite-gh-acme-app-7-<hash>` | `botlite-slack-dm-alice-0922-<hash>`, `botlite-slack-backend-bob-0922-<hash>` |
 | Its volume | `botlite-context` (`VOLUME`) | `botlite-slack-context` (`SLACK_VOLUME`) |
 | Its context key comes from | `CONTEXT_SECRET` | `SLACK_CONTEXT_SECRET` |
 | The team's tools | only when one of the bot's admins asks | yes |
@@ -77,8 +77,10 @@ BoxLite can't mount a volume read-only yet, and a Slack box that could write to 
 could leave something there for every GitHub box to read. A thread only ever runs as its own kind,
 and a config that would give both sides one volume or one secret keeps Slack off. A turn's job token
 opens only the tools that turn was given, so a stranger's turn on GitHub can't reach Linear with its
-own token. The deploy's public log shows only how the controller started, never a line about a
-thread.
+own token. A box's name says which thread it runs: the repo and number, or where the Slack thread
+is, who started it and when. What makes it that thread's alone is the hash of the thread's whole
+key at its end, so nobody can name a repo to land in another thread's box. The deploy's public log
+shows only how the controller started, never a line about a thread.
 
 ### Opening a PR
 
@@ -289,7 +291,9 @@ node deploy/ctl.mjs status                            # what it's waiting for, e
   App-Level Tokens*, generate one with the `connections:write` scope: that's the `xapp-…` token.
   *Install App → Install to Workspace* gives the *Bot User OAuth Token*, `xoxb-…`. Optionally,
   upload `slack/icon.png` as the app icon. Invite the bot where people should use it:
-  `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in.
+  `/invite @boxliteai`. No restart needed: the controller connects once the tokens are in. The
+  manifest leaves out `channels:read` and `groups:read`; add them if you want channel threads'
+  boxes named after their channel, not only after who started them.
 - **ChatGPT login:** the controller runs `codex login --device-auth` in its box, and `status` shows
   the link and code to approve with the bot's ChatGPT account. Use an account only the bot uses,
   and never copy another controller's `auth.json`: each refresh rotates the token, so two holders of
