@@ -60,7 +60,10 @@ export function writeAccess({ state, admins, req, ready = true }) {
   return { ok: false, why: 'only maintainers of this repo and people an admin added can' }
 }
 
-/** The help reply, for this person in this repo: what they can do, and whether PRs are open to them. */
+/**
+ * The help reply, for this person in this repo: what they can do, and whether PRs are open to
+ * them. `left` is their requests left today, or null for an admin, who has no daily limit.
+ */
 export function helpText({ login, req, access, isAdmin, left, limit, running }) {
   const lines = [
     `@${req.author} mention me with a question or a task — I run the code in an isolated [BoxLite](https://boxlite.ai) box and answer here.`,
@@ -77,7 +80,7 @@ export function helpText({ login, req, access, isAdmin, left, limit, running }) 
     lines.push('', '**Admin:**')
     for (const c of COMMANDS.filter((x) => x.admin)) lines.push(`- \`@${login} ${c.usage}\` — ${c.does}`)
   }
-  lines.push('', `${Math.max(0, left)} of ${limit} requests left today (resets at 00:00 UTC).`)
+  lines.push('', left === null ? 'No daily request limit: you run this bot.' : `${Math.max(0, left)} of ${limit} requests left today (resets at 00:00 UTC).`)
   return lines.join('\n')
 }
 

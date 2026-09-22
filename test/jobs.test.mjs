@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scheduler } from '../src/jobs.mjs'
-import { loadState, saveState, takeQuota } from '../src/state.mjs'
+import { loadState, saveState, takeQuota, quotaLeft } from '../src/state.mjs'
 import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -72,4 +72,12 @@ test('takeQuota: counts per user per UTC day', () => {
   assert.equal(takeQuota(s, 'bob', 2, d1), false)
   assert.equal(takeQuota(s, 'amy', 2, d1), true)
   assert.equal(takeQuota(s, 'bob', 2, new Date('2026-09-22T00:01:00Z')), true) // new day
+})
+
+test('quotaLeft: what is left today; yesterday’s count doesn’t carry over', () => {
+  const s = { usage: { bob: { day: '2026-09-21', count: 17 } } }
+  assert.equal(quotaLeft(s, 'bob', 20, new Date('2026-09-21T23:00:00Z')), 3)
+  assert.equal(quotaLeft(s, 'bob', 20, new Date('2026-09-22T00:01:00Z')), 20)
+  assert.equal(quotaLeft(s, 'amy', 20, new Date('2026-09-21T23:00:00Z')), 20)
+  assert.equal(quotaLeft({ usage: { bob: { day: '2026-09-21', count: 25 } } }, 'bob', 20, new Date('2026-09-21T23:00:00Z')), 0)
 })
