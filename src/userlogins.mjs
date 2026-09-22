@@ -9,7 +9,7 @@
 // oauthLogin read. Like the shared logins, the controller is their only holder; a box reaches them
 // only through the tool broker with its per-turn job token, never the token itself.
 import path from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { keyLogin, oauthLogin } from './oauth.mjs'
 
 // A user id we'll put in a path: a Slack user id is `U…`; never a `/`, `.` run or empty.
@@ -37,9 +37,19 @@ export function userLogins({ dir, kinds, fetchImpl = fetch }) {
     if (!cache.has(k)) cache.set(k, make(login, user))
     return cache.get(k)
   }
+  /** Every (login, user) bound on disk — a user's file per login, its refreshed `.live.json` aside. */
+  async function list() {
+    const out = []
+    for (const login of Object.keys(kinds)) {
+      const names = await readdir(path.join(dir, login)).catch(() => [])
+      for (const user of names) if (!user.endsWith('.live.json') && USER.test(user)) out.push({ login, user })
+    }
+    return out
+  }
   return {
     kinds,
     fileFor,
+    list,
     /** One user's logins loaded from disk: { <login>: loginObject }. Only the `ready()` ones can be used. */
     async forUser(user) {
       const out = {}
@@ -51,6 +61,25 @@ export function userLogins({ dir, kinds, fetchImpl = fetch }) {
         }),
       )
       return out
+    },
+    /** Keep idle OAuth logins alive (Notion drops one unused for 30 days), the way the shared ones were. */
+    async keepAlive(log = () => {}) {
+      for (const { login, user } of await list()) {
+        const l = of(login, user)
+        try {
+          if ((await l.load()) && l.stale?.()) await l.refresh()
+        } catch (e) {
+          log(`${login} keep-alive for ${user}: ${e.message}`)
+        }
+      }
+    },
+    /** For the status line: how many people have linked what. */
+    async summary() {
+      const items = await list()
+      if (!items.length) return 'none linked yet'
+      const people = new Set(items.map((i) => i.user)).size
+      const byLogin = Object.keys(kinds).map((n) => `${items.filter((i) => i.login === n).length} ${n}`).join(', ')
+      return `${byLogin} (${people} ${people === 1 ? 'person' : 'people'})`
     },
   }
 }

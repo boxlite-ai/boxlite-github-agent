@@ -146,12 +146,17 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     try {
       const known = slackState.threads[key]?.sessionId ? slackState.threads[key] : null
       // Each person uses their OWN tool logins (userlogins.mjs): the bot only reads what they can.
+      // Only in a DM, though — a channel thread has many requesters, and its session, sealed context
+      // and working directory are the thread's, not the person's, so a follow-up by someone else
+      // would resume the first person's context (and now their own login). A DM is one requester.
       const [asker, files, names, userLog] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), userLogins.forUser(req.user)])
-      const services = enabledServices(userLog, policy)
-      const linkable = Object.keys(userLogins.kinds).filter((name) => !userLog[name]?.ready()) // could bind, hasn't
+      const services = req.isDM ? enabledServices(userLog, policy) : []
+      const linkable = req.isDM ? Object.keys(userLogins.kinds).filter((name) => !userLog[name]?.ready()) : [] // could bind, hasn't
+      const dmForTools = !req.isDM && Object.values(userLog).some((l) => l.ready()) // has tools, but is in a channel
       const prsNow = await prs.status()
-      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, linkable, prs: prsNow }
-      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name), logins: userLog } // what its token opens, as this person
+      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, linkable, dmForTools, prs: prsNow }
+      // The login the turn uses is this person's own, and only in a DM (a channel gets no team tools).
+      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name), logins: req.isDM ? userLog : {} }
       // A PR is planned only when the box asks for it, for the request's own branch (publish.mjs).
       if (prsNow.ok) job.pr = { grant: (want) => grantPr(want, job, `${key}@${req.ts}`) }
       const fresh = async () => slackSessionPrompt({ ...talk, history: await transcript(req) })

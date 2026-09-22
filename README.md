@@ -71,7 +71,7 @@ team's conversations. So the two sides share nothing a box can reach:
 | Its box | `botlite-gh-acme-app-7-<hash>` | `botlite-slack-dm-alice-0922-<hash>`, `botlite-slack-backend-bob-0922-<hash>` |
 | Its volume | `botlite-context` (`VOLUME`) | `botlite-slack-context` (`SLACK_VOLUME`) |
 | Its context key comes from | `CONTEXT_SECRET` | `SLACK_CONTEXT_SECRET` |
-| The team's tools | only when one of the bot's admins asks (the bot's shared login) | each person, on the login they linked themselves |
+| The team's tools | none — no shared bot login | each person, on the login they linked themselves (in a DM) |
 | Who may ask for a PR | the bot's admins, the repo's maintainers, people an admin added | every member, into any public repo (`SLACK_PR_REPOS`) |
 | Who runs the commands | the bot's admins (`BOT_ADMINS`) | the workspace's owners and admins |
 
@@ -191,24 +191,23 @@ only**:
 
 ## Linear, Notion and Google Workspace
 
-On Slack, **each person links their own Linear, Notion and Google Workspace**, and a turn uses the
-requester's own login — so the bot reads only what that person can already see, and no one's private
-data reaches anyone else through it. Someone who hasn't linked a service simply can't use it, and
-the bot tells them how. On GitHub the thread is public and the tools come only to one of the bot's
-admins, on the bot's **own shared login**; Codex is told the thread is public, so what it reads
-stays out of the answer. Each service is off for a person until their login is in place — link one
-only where the account is yours to link, and share with the bot's own (GitHub) login only what
-everyone who can ask there may see.
+**Each person links their own Linear, Notion and Google Workspace**, and a turn uses the requester's
+own login — so the bot reads only what that person can already see, and no one's private data reaches
+anyone else through it. Someone who hasn't linked a service simply can't use it, and the bot tells
+them how. There is **no shared bot login** for anyone to borrow, and **no team tools on GitHub** (a
+public thread, run at anyone's request). It's **Slack, and only in a direct message**: a DM is one
+requester, but a channel thread has many and its session, context and files are the thread's, so
+one person's tools must never carry to another there. Link one only where the account is yours.
 
 **How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
 service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
-the controller checks the call, swaps in the right login — the asker's own on Slack, the bot's on
-GitHub — and forwards it to the service's official MCP server (the same pattern as a write turn's
-staging push, where the box pushes through the controller and never holds the token).
+the controller checks the call, swaps in the asker's own login, and forwards it to the service's
+official MCP server (the same pattern as a write turn's staging push, where the box pushes through
+the controller and never holds the token).
 
 ```mermaid
 sequenceDiagram
-    participant A as Asker (Slack / GitHub)
+    participant A as Asker (Slack DM)
     participant B as Session box (Codex)
     participant C as Controller (broker)
     participant S as Official MCP server
@@ -216,7 +215,7 @@ sequenceDiagram
     Note over B: no credentials —<br/>only this turn's job token
     B->>C: POST /mcp/linear (Bearer job token)<br/>tools/call save_issue
     Note over C: verify the token · was this turn<br/>given linear? · is the login in place? ·<br/>is save_issue on the policy list? ·<br/>under the 10-change / 60-call budget?
-    C->>S: the same call + the asker's own login<br/>(the bot's, on GitHub)
+    C->>S: the same call + the asker's own login
     S-->>C: result
     C-->>B: result (MCP headers only, no vendor cookies)
     Note over C: logs who · thread · tool,<br/>counts the change
@@ -241,7 +240,6 @@ answered Dorian, changed: Linear save_issue · Notion notion-create-pages
 |---|---|---|---|
 | What it sees | what that member sees | the pages shared with it | files and calendars shared with it |
 | A Slack person links their own | `LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs link linear <their Slack id>` | `node deploy/ctl.mjs link notion <their Slack id>` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
-| The bot's shared login (GitHub admins) | `… node deploy/ctl.mjs linear-key` | `node deploy/ctl.mjs notion-login` | `… node deploy/ctl.mjs google-login` |
 | Lasts | until you revoke the key | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
 
 **Linking a Slack person** binds their own token, keyed to their Slack id — the `U…` in the log's
@@ -266,8 +264,8 @@ The logins run on your machine and hand the tokens to the controller. Your machi
 refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as
 shipped, comments and issues in Linear (`save_issue` edits issues too) and comments and new pages in
 Notion. Nothing deletes, moves, shares or overwrites, and nothing changes Google files. A change is
-made as whoever's login the turn uses — the asker on Slack, the bot on GitHub — and can be prompted
-by anything written in the thread. The ones on offer:
+made as the person asking, on their own login, in their DM with the bot, and can be prompted by
+anything written in the thread. The ones on offer:
 
 | Service | Change tools | Notes |
 |---|---|---|

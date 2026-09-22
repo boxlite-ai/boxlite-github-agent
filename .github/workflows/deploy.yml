@@ -54,7 +54,6 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
           SLACK_CONTEXT_SECRET: ${{ secrets.SLACK_CONTEXT_SECRET }}
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           BOT_ADMINS: ${{ vars.BOT_ADMINS }}
         run: |
           node deploy/ctl.mjs github-token
@@ -64,7 +63,6 @@ jobs:
           GITHUB_APP_KEY="$key" node deploy/ctl.mjs github-app
           rm -f "$key"
           if [ -n "$SLACK_BOT_TOKEN" ]; then node deploy/ctl.mjs slack-tokens; fi
-          if [ -n "$LINEAR_API_KEY" ]; then node deploy/ctl.mjs linear-key; fi
           node deploy/ctl.mjs hook
           node deploy/ctl.mjs admins "$BOT_ADMINS" --includes "$GITHUB_SHA"
 

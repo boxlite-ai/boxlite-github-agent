@@ -36,7 +36,7 @@ export function enabledServices(logins, policy) {
 }
 const tools = (policy, name) => [...(policy[name]?.read ?? []), ...(policy[name]?.write ?? [])]
 
-/** The Google scopes a login needs for what the policy allows (ctl google-login asks for these). */
+/** The Google scopes a login needs for what the policy allows (`ctl link google` asks for these). */
 export function googleScopes(policy) {
   const scopes = new Set(['openid', 'email'])
   for (const [name, s] of Object.entries(SERVICES)) {

@@ -203,11 +203,15 @@ test('Slack prompts: guide someone to link their own tool when they have not, an
   assert.doesNotMatch(slackFollowUpPrompt(talk), /hasn't linked their/)
 })
 
-test('prompts: on GitHub the tools come only to an admin’s turn, which is told the thread is public', () => {
-  const services = [{ name: 'linear', label: 'Linear', writes: false }]
-  const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' }, services })
-  assert.match(p, /You also have tools for the team's Linear \(named mcp__linear__…\)/)
-  assert.match(p, /This thread is public, and so is your answer: use what the tools show you to do the work, but put\nin your answer only what the request needs, and nothing that shouldn't be public\./)
-  assert.doesNotMatch(newSessionPrompt({ login: 'botlite', req, pr }), /You also have tools|This thread is public/) // everyone else's turn
-  assert.match(followUpPrompt({ login: 'botlite', req, pr, services }), /^New request in the same thread\.\nTools this turn: Linear \(they only read\)\./)
+test('prompts: GitHub has no team tools at all — they are per-person and Slack-DM-only', () => {
+  const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' } })
+  assert.doesNotMatch(p, /You also have tools|This thread is public|mcp__/)
+  assert.match(p, /You hold no credentials, so your\nshell reaches only what's public\./)
+  assert.doesNotMatch(followUpPrompt({ login: 'botlite', req, pr }), /Tools this turn|mcp__/)
+})
+
+test('Slack prompts: in a channel the team tools are unavailable and the bot is told to say DM me', () => {
+  assert.match(slackSessionPrompt({ ...talk, dmForTools: true }), /This is a channel, so the team tools \(Linear, Notion, Google\) aren't available[\s\S]*work only in a direct message[\s\S]*tell them to DM you/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /This is a channel, so the team tools/) // a DM, or nothing linked
+  assert.match(slackFollowUpPrompt({ ...talk, dmForTools: true }), /aren't available: they act as one person's own account/)
 })
