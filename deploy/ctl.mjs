@@ -39,55 +39,74 @@ if (!box) {
 }
 const id = box.id || box.name
 
-async function sh(script, stdin) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+async function sh(script, stdin, lost) {
   const { execution_id: execId } = await bl.startExec(id, { command: 'bash', args: ['-c', script], timeout_seconds: 60 })
   let out = ''
-  const code = await bl.attach(id, execId, { stdin, onStdout: (b) => (out += b), onStderr: (b) => (out += b), timeoutMs: 90_000 })
-  return { code, out: out.trimEnd() }
+  try {
+    const code = await bl.attach(id, execId, { stdin, onStdout: (b) => (out += b), onStderr: (b) => (out += b), timeoutMs: 90_000 })
+    return { code, out: out.trimEnd() }
+  } catch (e) {
+    if (!lost) throw e
+    return lost(e) // it started; only its result is gone
+  }
 }
+// An attach sometimes drops after it opened, while the command runs on (seen live). A read is
+// retried, since reading twice is harmless; a command that changes something runs once.
+async function read(script) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await sh(script)
+    } catch (e) {
+      if (attempt >= 3) throw e
+      await sleep(2000 * attempt)
+    }
+  }
+}
+// ...and when the result of one that started is lost, --wait lets the next start settle it; without
+// --wait, it fails. One that never started fails either way.
+const act = (script, stdin) => sh(script, stdin, wait && ((e) => (console.log(`couldn't read the result (${e.message}); waiting for the next start anyway`), null)))
 // A hand-over that failed exits non-zero, so the workflow step that ran it fails too.
 function report(r, ok) {
   console.log(r.code === 0 ? ok : `failed: ${r.out}`)
   if (r.code !== 0) process.exit(1)
 }
 
-// How many times the boot loop has started the controller, counted in the same exec as the restart
-// that follows it: --wait looks for the start after those.
-const COUNT = `echo "starts $(grep -c 'starting controller (' ~/.botlite/controller.log 2>/dev/null)"; `
-function counted(r) {
-  const m = /^starts (\d*)\n?/.exec(r.out)
-  return { ...r, out: r.out.slice(m?.[0].length ?? 0), starts: Number(m?.[1] || 0) }
-}
+// How many times the boot loop has started the controller, read just before a restart: --wait
+// looks for the start after those.
+const countStarts = async () => Number((await read("grep -c 'starting controller (' ~/.botlite/controller.log 2>/dev/null || true")).out) || 0
 // The first of those starts to go live settles it: one that fails before going live (the launcher
 // counts those) is waited out, and a rollback, the gate's or the launcher's, fails at once.
 async function waitLive({ starts, want, exact }) {
   const latest = `awk 'index($0, "starting controller (") { n++; s = substr($0, index($0, "starting controller (") + 21); sub(/\\).*/, "", s); up = 0 } index($0, "live as @") { up = 1 } END { print n + 0, (s == "" ? "-" : s), (up ? "live" : "starting") }' ~/.botlite/controller.log`
   let seen = ''
   for (let i = 0; i < 100; i++) {
-    const [n, s, state] = (await sh(latest)).out.split(' ')
-    if (Number(n) > starts && `${n} ${state}` !== seen) {
-      seen = `${n} ${state}`
-      if (state !== 'live') console.log(`starting ${s}…`)
-      else {
-        const same = !want || want.startsWith(s) || s.startsWith(want)
-        if (same || (!exact && (await sh(`git -C ~/botlite merge-base --is-ancestor ${want} ${s}`)).code === 0)) {
-          console.log(`live on ${s}${same ? '' : `, which includes ${want.slice(0, 7)}`}`)
-          return
-        }
-        console.log(`live on ${s}, which ${exact ? 'is not' : "doesn't include"} ${want.slice(0, 7)}. How the start went:`)
-        return story()
-      }
+    if (i) await sleep(15_000)
+    const line = await read(latest).then((r) => r.out, (e) => console.log(`couldn't check (${e.message}); trying again`))
+    if (!line) continue
+    const [n, s, state] = line.split(' ')
+    if (Number(n) <= starts || `${n} ${state}` === seen) continue
+    seen = `${n} ${state}`
+    if (state !== 'live') {
+      console.log(`starting ${s}…`)
+      continue
     }
-    await new Promise((r) => setTimeout(r, 15_000))
+    const same = !want || want.startsWith(s) || s.startsWith(want)
+    if (same || (!exact && (await read(`git -C ~/botlite merge-base --is-ancestor ${want} ${s}`)).code === 0)) {
+      console.log(`live on ${s}${same ? '' : `, which includes ${want.slice(0, 7)}`}`)
+      return
+    }
+    console.log(`live on ${s}, which ${exact ? 'is not' : "doesn't include"} ${want.slice(0, 7)}. How the start went:`)
+    return story()
   }
   console.log('nothing went live in 25 minutes. How the start went:')
   return story()
 }
-// Only the boot story: this runs in a public Actions log, and the log also holds things like a
-// device-login code, which anyone could approve with their own ChatGPT account.
+// Only the boot story, URLs taken out: this runs in a public Actions log, and the log also holds
+// things like a device-login code, which anyone could approve with their own ChatGPT account.
 async function story() {
   const lines = "starting controller \\(|controller exited \\(|gate: |launcher: |failed to go live|rolled back|git pull failed|live as @|^[A-Za-z]*Error( \\[[A-Z_]+\\])?: |^file://"
-  console.log((await sh(`tail -n 400 ~/.botlite/controller.log | grep -E '${lines}' | tail -n 30`)).out)
+  console.log((await read(`tail -n 400 ~/.botlite/controller.log | grep -E '${lines}' | sed -E 's#https?://[^ ,]+#<url>#g' | tail -n 30`)).out)
   process.exit(1)
 }
 
@@ -112,18 +131,19 @@ if (includes !== undefined && !/^[0-9a-f]{7,40}$/.test(includes)) {
 const [cmd = 'status', arg] = argv
 if (cmd === 'status') {
   console.log(`${NAME}: ${box.status ?? box.state ?? '?'} (${id})`)
-  console.log((await sh('cat ~/.botlite/status.txt 2>/dev/null || echo "(starting — no status yet)"')).out)
+  console.log((await read('cat ~/.botlite/status.txt 2>/dev/null || echo "(starting — no status yet)"')).out)
 } else if (cmd === 'logs') {
-  console.log((await sh(`tail -n ${Number(arg) || 80} ~/.botlite/controller.log 2>/dev/null || echo "(no log yet)"`)).out)
+  console.log((await read(`tail -n ${Number(arg) || 80} ~/.botlite/controller.log 2>/dev/null || echo "(no log yet)"`)).out)
 } else if (cmd === 'restart') {
   // A rollback (src/main.mjs) leaves the checkout detached: re-attach the branch it was last on
   // (recorded by the controller) — never a stale BOTLITE_REF over a branch someone checked out.
-  const r = counted(await sh(COUNT + "cd ~/botlite && { git symbolic-ref -q HEAD >/dev/null || git checkout --quiet \"$(cat ~/.botlite/branch 2>/dev/null || echo \"${BOTLITE_REF:-main}\")\"; }; pkill -f 'botlite/src/mai[n].mjs' && echo restarting || echo 'controller process not found'"))
-  console.log(r.out)
-  if (wait) await waitLive({ starts: r.starts, want: includes })
+  const starts = await countStarts()
+  const r = await act("cd ~/botlite && { git symbolic-ref -q HEAD >/dev/null || git checkout --quiet \"$(cat ~/.botlite/branch 2>/dev/null || echo \"${BOTLITE_REF:-main}\")\"; }; pkill -f 'botlite/src/mai[n].mjs' && echo restarting || echo 'controller process not found'")
+  if (r) console.log(r.out)
+  if (wait) await waitLive({ starts, want: includes })
 } else if (cmd === 'webhook') {
   const { url } = await bl.previewUrl(id, 8788)
-  const secret = (await sh('cat ~/.botlite/webhook-secret 2>/dev/null')).out
+  const secret = (await read('cat ~/.botlite/webhook-secret 2>/dev/null')).out
   console.log(`GitHub App → Webhook URL:    ${url.replace(/\/+$/, '')}/webhook`)
   console.log(`GitHub App → Webhook secret: ${secret || '(not generated yet — restart the controller)'}`)
   console.log('Events: Issues, Issue comment, Pull request, Pull request review comment')
@@ -150,9 +170,10 @@ if (cmd === 'status') {
     process.exit(2)
   }
   // Between two starts there's no process to stop, and the next start reads the file anyway.
-  const r = counted(await sh(COUNT + "umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/bot-admins && { pkill -f 'botlite/src/mai[n].mjs' || true; } && echo restarting", `${logins.join(',')}\n`))
-  report(r, `admins: ${logins.map((l) => `@${l}`).join(' ')} — the controller restarts to apply them`)
-  if (wait) await waitLive({ starts: r.starts, want: includes })
+  const starts = await countStarts()
+  const r = await act("umask 077 && mkdir -p ~/.botlite && cat > ~/.botlite/bot-admins && { pkill -f 'botlite/src/mai[n].mjs' || true; } && echo restarting", `${logins.join(',')}\n`)
+  if (r) report(r, `admins: ${logins.map((l) => `@${l}`).join(' ')} — the controller restarts to apply them`)
+  if (wait) await waitLive({ starts, want: includes })
 } else if (cmd === 'hook') {
   const script = readFileSync(new URL('./post-merge.sh', import.meta.url), 'utf8')
   const r = await sh('cat > ~/botlite/.git/hooks/post-merge && chmod +x ~/botlite/.git/hooks/post-merge && echo installed', script)
@@ -163,10 +184,11 @@ if (cmd === 'status') {
     process.exit(2)
   }
   // Only a commit the tracked branch already has: this runs what was merged, never anything else.
-  const r = counted(await sh(COUNT + `cd ~/botlite && git fetch --quiet origin && b="$(cat ~/.botlite/branch 2>/dev/null || echo "\${BOTLITE_REF:-main}")" && git merge-base --is-ancestor ${arg} "origin/$b" && git checkout --quiet --detach ${arg} && echo "running $(git rev-parse --short HEAD), from $b — restart or /deploy to go back to its tip" && { pkill -f 'botlite/src/mai[n].mjs' || true; }`))
-  console.log(r.code === 0 ? r.out : `failed (is ${arg} on the tracked branch?): ${r.out}`)
-  if (r.code !== 0) process.exit(1)
-  if (wait) await waitLive({ starts: r.starts, want: arg, exact: true })
+  const starts = await countStarts()
+  const r = await act(`cd ~/botlite && git fetch --quiet origin && b="$(cat ~/.botlite/branch 2>/dev/null || echo "\${BOTLITE_REF:-main}")" && git merge-base --is-ancestor ${arg} "origin/$b" && git checkout --quiet --detach ${arg} && echo "running $(git rev-parse --short HEAD), from $b — restart or /deploy to go back to its tip" && { pkill -f 'botlite/src/mai[n].mjs' || true; }`)
+  if (r) console.log(r.code === 0 ? r.out : `failed (is ${arg} on the tracked branch?): ${r.out}`)
+  if (r && r.code !== 0) process.exit(1)
+  if (wait) await waitLive({ starts, want: arg, exact: true })
 } else {
   console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha>  (restart, admins, rollback: [--wait] [--includes <sha>])')
   process.exit(2)

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { selfBuild, deployPlan, markGood, cleanExit, takeRollback, deployOutcome, pendingAfter, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
+import { selfBuild, deployPlan, markGood, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, sensitiveFiles, recordedBranch, recordBranch } from '../src/deploy.mjs'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -75,7 +75,7 @@ test('deployOutcome: live (on trial), rolled back, or not what was asked — sai
 
 test('deployOutcome: the gate stopped short of the deploy on a newer commit — live on trial, said once', () => {
   const pending = { from: A, to: C, by: 'root' } // /deploy asked for C; B, between, is the newest that passes
-  const gate = { from: C, to: B, why: 'failed its pre-start check (test/start.test.mjs)' }
+  const gate = { from: C, to: B, by: 'gate', why: 'failed its pre-start check (test/start.test.mjs)' }
   assert.equal(deployOutcome({ pending, running: B, rollback: gate }), '@root ⚠️ `ccccccc` failed its pre-start check (test/start.test.mjs), so I went live on `bbbbbbb` instead, the newest commit before it that passes. Fix it on `main` and `/deploy` again. If `bbbbbbb` fails in the next 10 minutes, I roll it back.')
   const onTrial = pendingAfter({ pending, running: B, rollback: gate })
   assert.deepEqual(onTrial, { ...pending, to: B, live: true })
@@ -84,6 +84,20 @@ test('deployOutcome: the gate stopped short of the deploy on a newer commit — 
   assert.deepEqual(pendingAfter({ pending: onTrial, running: B, rollback: gate }), onTrial)
   // But if B fails its trial, the thread hears it.
   assert.match(deployOutcome({ pending: onTrial, running: A, rollback: { from: B, to: A } }), /^@root ⚠️ `bbbbbbb` failed three times before its 10-minute trial was up, so I'm on `aaaaaaa` again\./)
+  // A gate installed before rollbacks said whose they were marks its own with a `why` alone.
+  const legacy = { from: C, to: B, why: 'failed its pre-start check (src/main.mjs)' }
+  assert.match(deployOutcome({ pending, running: B, rollback: legacy }), /so I went live on `bbbbbbb` instead/)
+  assert.deepEqual(pendingAfter({ pending, running: B, rollback: legacy }), { ...pending, to: B, live: true })
+})
+
+test('deployOutcome: the launcher says why it rolled back — a failed trial, a hang — and goes to the last good build', () => {
+  const onTrial = { from: A, to: B, by: 'root', live: true }
+  const idle = { from: B, to: A, by: 'launcher', why: "wasn't polling at the end of its 10-minute trial (no successful poll for 10 minutes)" }
+  assert.equal(deployOutcome({ pending: onTrial, running: A, rollback: idle }), "@root ⚠️ `bbbbbbb` wasn't polling at the end of its 10-minute trial (no successful poll for 10 minutes), so I'm on `aaaaaaa` again. Fix it on `main` and `/deploy` again.")
+  assert.equal(pendingAfter({ pending: onTrial, running: A, rollback: idle }), null)
+  const hung = { from: B, to: D, by: 'launcher', why: 'stopped making progress for 10 minutes' }
+  assert.equal(deployOutcome({ pending: onTrial, running: D, rollback: hung }), "@root ⚠️ `bbbbbbb` stopped making progress for 10 minutes, so I'm on `ddddddd`, the last good build. Fix it on `main` and `/deploy` again.")
+  assert.equal(pendingAfter({ pending: onTrial, running: D, rollback: hung }), null) // a launcher's rollback is never a deploy on trial
 })
 
 test('pendingAfter: a live deploy stays pending through its trial; a rollback or a miss ends it', () => {
@@ -100,6 +114,8 @@ test('cleanExit: a drained restart resets the launcher’s count — only crashe
   writeFileSync(path.join(dir, 'boot.json'), JSON.stringify({ commit: A, tries: 2 }))
   cleanExit(dir, A)
   assert.deepEqual(JSON.parse(readFileSync(path.join(dir, 'boot.json'), 'utf8')), { commit: A, tries: 0 })
+  failTrial(dir, A, "wasn't polling at the end of its trial") // …while a failed trial is rolled back on the next start
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, 'boot.json'), 'utf8')), { commit: A, tries: 0, failed: "wasn't polling at the end of its trial" })
 })
 
 test('sensitiveFiles: the bot’s trust boundary — not its tests, docs or other code', () => {

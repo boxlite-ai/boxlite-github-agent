@@ -28,9 +28,9 @@ const commit = (message, files) => {
 const takeRollback = () => {
   const file = path.join(stateDir, 'rollback.json')
   if (!existsSync(file)) return null
-  const { from, to, why } = JSON.parse(readFileSync(file, 'utf8'))
+  const { from, to, by, why } = JSON.parse(readFileSync(file, 'utf8'))
   rmSync(file)
-  return { from, to, why }
+  return { from, to, by, why }
 }
 
 test('gate: a pull runs up to its newest commit that passes; with none, on the build it had', { timeout: 120_000 }, () => {
@@ -52,7 +52,7 @@ test('gate: a pull runs up to its newest commit that passes; with none, on the b
   git(box, ['pull', '--quiet', '--ff-only'])
   assert.equal(git(box, ['rev-parse', 'HEAD']), two) // the newest that passes: one and two are live
   assert.equal(git(box, ['rev-parse', '--abbrev-ref', 'HEAD']), 'main') // on the branch, so the next pull tries again
-  assert.deepEqual(takeRollback(), { from: unlinked, to: two, why: 'failed its pre-start check (test/start.test.mjs)' })
+  assert.deepEqual(takeRollback(), { from: unlinked, to: two, by: 'gate', why: 'failed its pre-start check (test/start.test.mjs)' })
 
   // Main breaks the launcher too: nothing this pull brings passes, so it stays on what it had. A hand
   // edit in the checkout, which the pull carried over, is kept in a patch before the reset.
@@ -60,7 +60,7 @@ test('gate: a pull runs up to its newest commit that passes; with none, on the b
   writeFileSync(path.join(box, 'README.md'), 'v3, hotfixed by hand\n')
   git(box, ['pull', '--quiet', '--ff-only'])
   assert.equal(git(box, ['rev-parse', 'HEAD']), two)
-  assert.deepEqual(takeRollback(), { from: broken, to: two, why: 'failed its pre-start check (src/main.mjs)' })
+  assert.deepEqual(takeRollback(), { from: broken, to: two, by: 'gate', why: 'failed its pre-start check (src/main.mjs)' })
   const patches = readdirSync(stateDir).filter((f) => /^gate-.*\.patch$/.test(f))
   assert.equal(patches.length, 1)
   assert.match(readFileSync(path.join(stateDir, patches[0]), 'utf8'), /\+v3, hotfixed by hand/)

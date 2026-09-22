@@ -39,7 +39,7 @@ import { gitPushHandler } from './gitpush.mjs'
 import { githubApp, appJwt } from './githubapp.mjs'
 import { parseCommand, runCommand, writeAccess, modelOf } from './access.mjs'
 import { planWrite, publishWrite } from './publish.mjs'
-import { selfBuild, deployPlan, markGood, cleanExit, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS } from './deploy.mjs'
+import { selfBuild, deployPlan, markGood, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 
@@ -164,7 +164,11 @@ async function waitForChatgptLogin() {
   }
   await status(null, 'chatgpt')
 }
-const [githubToken] = await Promise.all([waitForGithubToken(), waitForChatgptLogin()])
+// The launcher's watchdog kills a controller that stops beating (src/main.mjs). Waiting on a person
+// (a token to be handed over, a device login to be approved) is progress too.
+const beat = () => globalThis.botliteBeat?.()
+const waitingOnPeople = setInterval(beat, 60_000)
+const [githubToken] = await Promise.all([waitForGithubToken(), waitForChatgptLogin()]).finally(() => clearInterval(waitingOnPeople))
 setInterval(() => {
   if (chatgpt.stale()) chatgpt.refresh().then(() => log('ChatGPT login refreshed'), (e) => log(e.message))
 }, 3_600_000).unref()
@@ -400,14 +404,17 @@ async function ensureVolume() {
 
 // A restart (`ctl restart`, a redeploy) must not cut off answers: accepted requests are marked
 // seen, so a turn killed mid-way would never be retried. Take no new work, finish what's running.
+// A build that fails its trial leaves the same way, then the launcher rolls it back.
+let trialFailed = null
 process.on('SIGTERM', async () => {
   if (draining) return
   draining = true
   log(`SIGTERM: finishing ${inflight} running turn(s) before exiting`)
   for (let waited = 0; inflight > 0 && waited < cfg.jobTimeoutMs + 120_000; waited += 1000) await sleep(1000)
   await persist()
-  if (build.commit) cleanExit(stateDir, build.commit) // a restart, not a failure: the launcher counts crashes only
-  process.exit(0)
+  if (build.commit && trialFailed) failTrial(stateDir, build.commit, trialFailed)
+  else if (build.commit) cleanExit(stateDir, build.commit) // a restart, not a failure: the launcher counts crashes only
+  process.exit(trialFailed ? 1 : 0)
 })
 
 await ensureVolume().catch((e) => log(`volume check: ${e.message} — create "${cfg.volume}" in the dashboard if this key lacks volume permissions`))
@@ -428,7 +435,14 @@ if (deploying) {
   state.deploy = pendingAfter({ pending: deploying, running: build.commit, rollback })
   await persist()
 }
+// Running isn't enough to pass: a build that isn't polling by the end of its trial fails it.
 setTimeout(async () => {
+  const { ok, why } = health()
+  if (!ok) {
+    trialFailed = `wasn't polling at the end of its ${TRIAL_MS / 60_000}-minute trial (${why})`
+    log(`build ${build.commit?.slice(0, 7)} ${trialFailed}: stopping, for the launcher to roll it back`)
+    return process.kill(process.pid, 'SIGTERM')
+  }
   if (build.commit) markGood(stateDir, build.commit)
   if (state.deploy?.live && state.deploy.to === build.commit) {
     state.deploy = null
@@ -444,5 +458,6 @@ for (;;) {
   } catch (e) {
     log(`poll: ${e.message}`)
   }
+  beat() // the loop goes round, even when GitHub doesn't answer: that's progress to the watchdog
   await sleep(Math.max(interval, 30) * 1000)
 }

@@ -49,4 +49,5 @@ for c in $(git rev-list --first-parent --max-count=20 "$old..$new" | sed 1d); do
 done
 git reset --quiet --hard "$to"
 echo "$(date -u +%FT%TZ) gate: ${new%"${new#???????}"} failed its pre-start check ($why) — running ${to%"${to#???????}"}"
-printf '{"from":"%s","to":"%s","at":"%s","why":"failed its pre-start check (%s)"}\n' "$new" "$to" "$(date -u +%FT%TZ)" "$why" > "$state/rollback.json"
+node -e 'const [file, from, to, why] = process.argv.slice(1)
+require("fs").writeFileSync(file, JSON.stringify({ from, to, at: new Date().toISOString(), by: "gate", why: `failed its pre-start check (${why})` }) + "\n")' "$state/rollback.json" "$new" "$to" "$why"

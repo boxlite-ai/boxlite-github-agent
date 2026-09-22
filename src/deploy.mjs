@@ -68,6 +68,8 @@ export function markGood(stateDir, commit) {
 }
 /** A clean exit (drained, restarting) is no failure: the launcher counts crashes only. */
 export const cleanExit = (stateDir, commit) => writeFileSync(path.join(stateDir, 'boot.json'), JSON.stringify({ commit, tries: 0 }))
+/** A build that failed its trial: the launcher rolls it back on the next start, saying why. */
+export const failTrial = (stateDir, commit, why) => writeFileSync(path.join(stateDir, 'boot.json'), JSON.stringify({ commit, tries: 0, failed: why }))
 /** A rollback before this start, the launcher's or the pull gate's ({ from, to, at, why? }), read once. */
 export function takeRollback(stateDir) {
   const file = path.join(stateDir, 'rollback.json')
@@ -85,9 +87,9 @@ export function takeRollback(stateDir) {
  * deploy stays pending through the new build's trial (`live: true`), so a rollback during it is
  * reported in the same thread.
  *
- * A rollback with a `why` is the pull gate's (deploy/post-merge.sh): it may stop on a pulled commit
- * newer than the build it had, which then goes live on trial like any deploy. The launcher's goes
- * back to the last good build.
+ * A rollback by the pull gate (deploy/post-merge.sh) may stop on a pulled commit newer than the
+ * build it had, which then goes live on trial like any deploy. The launcher's goes back to the last
+ * good build.
  */
 export function deployOutcome({ pending, running, rollback }) {
   if (!pending) return null
@@ -99,7 +101,7 @@ export function deployOutcome({ pending, running, rollback }) {
     const why = rollback.why ?? `failed three times before its ${TRIAL_MS / 60_000}-minute trial was up`
     const fix = 'Fix it on `main` and `/deploy` again.'
     if (rollback.to === pending.from) return `${who} ⚠️ \`${short(rollback.from)}\` ${why}, so I'm on ${to} again. ${fix}`
-    if (rollback.why) return `${who} ⚠️ \`${short(rollback.from)}\` ${why}, so I went live on ${to} instead, the newest commit before it that passes. ${fix} ${trial(to)}`
+    if (byGate(rollback)) return `${who} ⚠️ \`${short(rollback.from)}\` ${why}, so I went live on ${to} instead, the newest commit before it that passes. ${fix} ${trial(to)}`
     return `${who} ⚠️ \`${short(rollback.from)}\` ${why}, so I'm on ${to}, the last good build. ${fix}`
   }
   if (pending.live) return null // restarted during its trial: it already said it's live
@@ -107,8 +109,11 @@ export function deployOutcome({ pending, running, rollback }) {
   return `${who} ⚠️ that deploy didn't take: I'm running \`${short(running)}\`, not \`${short(pending.to)}\`.`
 }
 
+// Whose rollback it was: the gate's and the launcher's say so; a gate installed before they did
+// marked its own with a `why` alone.
+const byGate = (rollback) => (rollback.by ? rollback.by === 'gate' : Boolean(rollback.why))
 // The gate stopped on the build already live on its trial: nothing changed since it said so.
-const heldBack = ({ pending, rollback }) => Boolean(rollback.why && pending.live && rollback.to === pending.to)
+const heldBack = ({ pending, rollback }) => byGate(rollback) && Boolean(pending.live) && rollback.to === pending.to
 
 /**
  * What's left pending after this start: kept (live) through the trial of the build it put live —
@@ -118,7 +123,7 @@ export function pendingAfter({ pending, running, rollback }) {
   if (!pending) return null
   if (!rollback) return running === pending.to ? { ...pending, live: true } : null
   if (heldBack({ pending, rollback })) return pending
-  return rollback.why && running === rollback.to && running !== pending.from ? { ...pending, to: running, live: true } : null
+  return byGate(rollback) && running === rollback.to && running !== pending.from ? { ...pending, to: running, live: true } : null
 }
 
 // The bot's own trust boundary: who may publish, what gets checked and pushed, the credentials,
