@@ -111,7 +111,9 @@ fenced as untrusted context, never as instructions.
 
 ## Run your own
 
-The controller requires Node.js 22+ for the global `WebSocket`.
+Use Node.js 22+ for the controller: it provides the global `WebSocket` needed to stay attached to
+BoxLite executions and stream their output. Without that API, `src/main.mjs` exits at startup
+with `Node 22+ required (exec attach uses the global WebSocket)`.
 
 ```bash
 export BOXLITE_API_KEY=blk_live_…
