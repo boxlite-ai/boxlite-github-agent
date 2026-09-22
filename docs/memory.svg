@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="204" viewBox="0 0 900 204" role="img" aria-labelledby="t">
+  <title id="t">Turn 1 runs in box A and seals its context onto the shared volume. Box A is deleted. Turn 2 runs in a new box B, restores that context, resumes the same Codex session and still knows the codeword.</title>
+  <style>
+    :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule-strong: #818b98; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #151b23; --frame: #3d444d; --ink: #f0f6fc; --muted: #9198a1; --rule-strong: #656c76; --amber: #d29922; --amber-soft: #2e2410; --green: #3fb950; }
+    }
+    text { fill: var(--ink); font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; }
+    .small { font-size: 12px; }
+    .muted { fill: var(--muted); }
+    .amber { fill: var(--amber); }
+    .ok { fill: var(--green); font-weight: 600; }
+    .frame { fill: var(--bg); stroke: var(--frame); }
+    .ext { fill: var(--bg); stroke: var(--rule-strong); stroke-width: 1.2; }
+    .untrusted { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 1.6; stroke-dasharray: 6 4; }
+    .card { fill: var(--bg); stroke: var(--rule-strong); }
+    .edge { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+    .back { stroke: var(--ink); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; opacity: 0.8; }
+    .x { stroke: var(--muted); stroke-width: 2; }
+    .ah { fill: var(--ink); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="frame" x="0.5" y="0.5" width="899" height="203" rx="12"/>
+
+  <!-- turn 1, box A (deleted afterwards) -->
+  <rect class="untrusted" x="20" y="48" width="220" height="76" rx="10"/>
+  <text class="title" x="130" y="76" text-anchor="middle">turn 1 · box A</text>
+  <text x="130" y="100" text-anchor="middle">"remember PAPAYA-7431"</text>
+  <circle class="card" cx="240" cy="48" r="12"/>
+  <line class="x" x1="235" y1="43" x2="245" y2="53"/>
+  <line class="x" x1="245" y1="43" x2="235" y2="53"/>
+  <text class="small muted" x="130" y="146" text-anchor="middle">box deleted before turn 2</text>
+
+  <!-- shared volume -->
+  <rect class="ext" x="340" y="120" width="220" height="64" rx="10"/>
+  <text class="title" x="450" y="146" text-anchor="middle">shared volume</text>
+  <text class="small amber" x="450" y="168" text-anchor="middle">sessions/…/7/context.sealed</text>
+
+  <!-- turn 2, new box B -->
+  <rect class="untrusted" x="660" y="48" width="220" height="76" rx="10"/>
+  <text class="title" x="770" y="76" text-anchor="middle">turn 2 · new box B</text>
+  <text x="770" y="100" text-anchor="middle">restore → codex resume</text>
+  <text class="ok" x="770" y="150" text-anchor="middle">answers PAPAYA-7431</text>
+
+  <line class="edge" x1="240" y1="112" x2="338" y2="146" marker-end="url(#ah)"/>
+  <text class="small" x="284" y="104" text-anchor="middle">seal</text>
+  <line class="edge" x1="560" y1="146" x2="658" y2="112" marker-end="url(#ah)"/>
+  <text class="small" x="614" y="104" text-anchor="middle">restore</text>
+
+  <line class="back" x1="262" y1="36" x2="658" y2="36" marker-end="url(#ah)"/>
+  <text class="small muted" x="460" y="26" text-anchor="middle">controller keeps the thread's Codex session id</text>
+</svg>
