@@ -223,7 +223,8 @@ if (cmd === 'status') {
     }
     login = await googleLogin({ clientId, clientSecret, scopes: googleScopes(TOOLS) })
   }
-  // Written aside, then moved: the controller may be reading this file, or saving a refresh into it.
+  // Written aside, then moved: the controller may be reading this file. (It keeps the logins it
+  // refreshes in files of its own, so it never writes this one: oauth.mjs.)
   const file = `~/.botlite/${cmd === 'notion-login' ? 'notion' : 'google'}-oauth.json`
   const r = await sh(`umask 077 && mkdir -p ~/.botlite && cat > ${file}.new && mv ${file}.new ${file} && echo stored`, JSON.stringify(login))
   report(r, `linked${login.account ? ` as ${login.account}` : ''} and handed to the controller — on from the next request`)

@@ -1,7 +1,7 @@
 // The bot's logins to Linear, Notion and Google Workspace, held by the controller only.
 //
-// Linear's is an API key — nothing to refresh, and in the deployed controller a BoxLite secret
-// placeholder, like the Slack tokens. Notion's and Google's are OAuth logins kept alive here the
+// Linear's is an API key — nothing to refresh: from the environment (a BoxLite secret placeholder)
+// or the file `ctl linear-key` hands over. Notion's and Google's are OAuth logins kept alive here the
 // way chatgpt.mjs keeps the ChatGPT one: access tokens last hours, and refresh tokens rotate
 // (Notion's on every refresh), so the controller is their one holder and saves each new one before
 // using it. A login arrives from `node deploy/ctl.mjs notion-login` / `google-login`, done on your
@@ -28,43 +28,59 @@ export function keyLogin(read) {
   }
 }
 
-/** A refreshing OAuth login, kept in `file` (0600). `load()` is false until one has been linked. */
+/**
+ * A refreshing OAuth login. `file` (0600) is the login as handed over — ctl writes it — and the
+ * controller keeps the one it refreshes in a file of its own beside it (…live.json): the two never
+ * write the same file, so a login linked again while a refresh is under way can't be overwritten
+ * by that refresh. The newer link wins; of one link, the refreshed copy. `load()` is false until
+ * one has been linked.
+ */
 export function oauthLogin({ name, file, fetchImpl = fetch, now = () => Date.now() }) {
+  const live = file.replace(/(\.json)?$/, '.live.json')
   let tokens = null
   let inflight = null
 
-  async function save() {
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
-    const tmp = `${file}.${process.pid}.tmp`
-    await writeFile(tmp, JSON.stringify(tokens), { mode: 0o600 })
-    await rename(tmp, file)
+  async function save(record) {
+    await mkdir(path.dirname(live), { recursive: true, mode: 0o700 })
+    const tmp = `${live}.${process.pid}.tmp`
+    await writeFile(tmp, JSON.stringify(record), { mode: 0o600 })
+    await rename(tmp, live)
   }
 
   function refresh() {
     inflight ??= (async () => {
-      const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: tokens.client_id })
-      if (tokens.client_secret) form.set('client_secret', tokens.client_secret)
-      if (tokens.resource) form.set('resource', tokens.resource)
-      const res = await fetchImpl(tokens.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
+      const from = tokens // the login this refresh is for
+      const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: from.refresh_token, client_id: from.client_id })
+      if (from.client_secret) form.set('client_secret', from.client_secret)
+      if (from.resource) form.set('resource', from.resource)
+      const res = await fetchImpl(from.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
       if (!res.ok) throw new Error(`${name} token refresh failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`)
       const t = await res.json()
-      tokens = { ...tokens, access_token: t.access_token, refresh_token: t.refresh_token ?? tokens.refresh_token, expires_at: now() + (t.expires_in ?? 3600) * 1000, refreshed_at: new Date(now()).toISOString() }
-      await save() // before anything uses it: the old refresh token may already be dead
+      if (tokens !== from) return // linked again meanwhile: the new login stands, this one is done
+      tokens = { ...from, access_token: t.access_token, refresh_token: t.refresh_token ?? from.refresh_token, expires_at: now() + (t.expires_in ?? 3600) * 1000, refreshed_at: new Date(now()).toISOString() }
+      await save(tokens) // before anything uses it: the old refresh token may already be dead
     })().finally(() => {
       inflight = null
     })
     return inflight
   }
 
+  const read = async (f) => {
+    try {
+      const login = JSON.parse(await readFile(f, 'utf8'))
+      return login?.refresh_token ? login : null
+    } catch {
+      return null // not there yet, or mid-write: it counts once it's whole
+    }
+  }
+
   return {
-    /** Picks up the login on disk. A new one (from ctl) replaces the one in memory; ours is never older than the file. */
+    /** Picks up the login on disk: one linked since (from ctl) replaces the one in memory. */
     async load() {
-      try {
-        const disk = JSON.parse(await readFile(file, 'utf8'))
-        if (disk?.refresh_token && disk.linked_at !== tokens?.linked_at) tokens = disk
-      } catch {
-        /* not linked yet, or a file mid-write: keep what we have */
-      }
+      const [kept, handed] = await Promise.all([read(live), read(file)])
+      // The newer link; of one link, ours (the sort keeps it first), which may have been refreshed since.
+      const newest = [kept, handed].filter(Boolean).sort((a, b) => Date.parse(b.linked_at) - Date.parse(a.linked_at))[0]
+      if (newest && newest.linked_at !== tokens?.linked_at) tokens = newest
       return Boolean(tokens)
     },
     ready: () => Boolean(tokens),

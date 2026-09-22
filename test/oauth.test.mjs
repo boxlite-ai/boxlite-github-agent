@@ -47,10 +47,48 @@ test('oauthLogin: off until linked; a token near expiry is refreshed first — o
   assert.deepEqual(await Promise.all([l.token(), l.token(), l.token()]), ['at-2', 'at-2', 'at-2'])
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0], { url: 'https://mcp.notion.test/token', form: { grant_type: 'refresh_token', refresh_token: 'rt-1', client_id: 'client-1', resource: 'https://mcp.notion.test/mcp' } })
-  const saved = JSON.parse(readFileSync(file, 'utf8'))
+  const live = file.replace('.json', '.live.json')
+  const saved = JSON.parse(readFileSync(live, 'utf8'))
   assert.deepEqual([saved.refresh_token, saved.access_token, saved.expires_at], ['rt-2', 'at-2', now + 28_800_000])
-  assert.equal(statSync(file).mode & 0o777, 0o600)
+  assert.equal(statSync(live).mode & 0o777, 0o600)
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).refresh_token, 'rt-1') // the handed-over file is ctl's alone
   assert.equal(l.describe(), 'linked, link again by 2027-03-21')
+  // A restart picks up the refreshed login, not the handed-over one, whose refresh token is spent.
+  const again = oauthLogin({ name: 'Notion', file, fetchImpl, now: () => now })
+  await again.load()
+  assert.equal(await again.token(), 'at-2')
+  assert.equal(calls.length, 1)
+})
+
+test('oauthLogin: a login linked again while a refresh is under way stands — that refresh can’t overwrite it', async () => {
+  let release
+  const fetchImpl = async () => (await new Promise((r) => (release = r)), Response.json({ access_token: 'at-old-2', refresh_token: 'rt-old-2', expires_in: 3600 }))
+  const file = fileWith(linked())
+  const l = oauthLogin({ name: 'Notion', file, fetchImpl, now: () => T0 + 7_200_000 })
+  await l.load()
+  const pending = l.token() // expired: the old login is being refreshed
+  await new Promise((r) => setTimeout(r, 5))
+  const relinked = linked({ access_token: 'at-new', refresh_token: 'rt-new', linked_at: '2026-10-01T00:00:00.000Z', expires_at: T0 + 10 * 3_600_000 })
+  writeFileSync(file, JSON.stringify(relinked)) // ctl: linked again, meanwhile
+  await l.load()
+  release()
+  assert.equal(await pending, 'at-new')
+  assert.equal(await l.token(), 'at-new')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), relinked) // untouched
+  const again = oauthLogin({ name: 'Notion', file, fetchImpl, now: () => T0 + 7_200_000 })
+  await again.load()
+  assert.equal(await again.token(), 'at-new') // and a restart keeps it
+})
+
+test('oauthLogin: of one link the refreshed copy counts, and a newer link beats both', async () => {
+  const file = fileWith(linked())
+  writeFileSync(file.replace('.json', '.live.json'), JSON.stringify(linked({ access_token: 'at-old-2', refresh_token: 'rt-old-2', refreshed_at: '2026-09-22T00:30:00.000Z' })))
+  const l = oauthLogin({ name: 'Notion', file, now: () => T0 })
+  await l.load()
+  assert.equal(await l.token(), 'at-old-2')
+  writeFileSync(file, JSON.stringify(linked({ access_token: 'at-new', linked_at: '2026-10-01T00:00:00.000Z', expires_at: T0 + 10 * 3_600_000 })))
+  await l.load()
+  assert.equal(await l.token(), 'at-new')
 })
 
 test('oauthLogin: Google’s client secret goes along; a refresh without a new refresh token keeps the old one', async () => {
