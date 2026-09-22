@@ -200,7 +200,8 @@ can read. So share with it only what everyone who can ask may see.
 **How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
 service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
 the controller checks the call, swaps in the bot's own login, and forwards it to the service's
-official MCP server — the swap the same idea as a write turn's git push (gitpush.mjs).
+official MCP server — the same pattern as a write turn's git push (gitpush.mjs), where the box
+pushes through the controller and never holds the token.
 
 ```mermaid
 sequenceDiagram
@@ -224,7 +225,7 @@ spent budget — so a public GitHub thread can't reach a tool its turn never got
 call one you didn't list, however it's asked. One real Slack request ("file a Linear issue and
 create a Notion page"), as the controller logged it:
 
-```
+```text
 linear list_teams                       (read: find a team)
 notion notion-fetch                     (read)
 linear save_issue (a change)            → the issue
