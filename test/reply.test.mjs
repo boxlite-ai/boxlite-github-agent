@@ -41,3 +41,15 @@ test('reply: a 5xx for a comment that isn’t there is posted once more; a 4xx i
   await assert.rejects(reply(refused.gh, review, 'x', { retryDelayMs: 0 }), /422/)
   assert.equal(refused.calls.length, 1)
 })
+
+test('reply: a dropped connection is checked too, and an earlier reply that reads the same is not this one', async () => {
+  const dropped = fakeGithub([{ status: undefined, created: true }]) // fetch failed: no status, but it got there
+  await reply(dropped.gh, review, 'the answer', { retryDelayMs: 0 })
+  assert.equal(dropped.comments.length, 1)
+
+  const twice = fakeGithub([{ status: 500, created: false }])
+  twice.comments.push({ id: 99, body: 'sorry, something went wrong' }) // the same words, posted a moment ago
+  await reply(twice.gh, review, 'sorry, something went wrong', { retryDelayMs: 0, footer: false })
+  assert.equal(twice.comments.length, 2) // this one was lost, so it's posted
+  assert.match(twice.comments[1].body, /^sorry, something went wrong\n<!-- botlite:[0-9a-f-]{36} -->$/) // the marker is invisible on GitHub
+})

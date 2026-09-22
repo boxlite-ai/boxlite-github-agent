@@ -42,8 +42,9 @@ export function codexArgs({ sessionId, cwd, outFile, proxyUrl, model, effort }) 
   return sessionId ? ['exec', 'resume', ...opts, sessionId, '-'] : ['exec', ...opts, '-C', cwd, '-']
 }
 
+// The job token rides every request to it: https, or plain http only on this machine (tests).
 const proxyOrigin = (proxyUrl) => {
-  if (!/^https?:\/\/[^\s"'\\]+$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
+  if (!/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$))[^\s"'\\]*$/.test(proxyUrl || '')) throw new Error(`bad proxy url: ${proxyUrl}`)
   return proxyUrl.replace(/\/+$/, '')
 }
 

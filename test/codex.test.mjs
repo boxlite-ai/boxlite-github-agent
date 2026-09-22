@@ -33,6 +33,10 @@ test('codexConfig: the same routing as the flags, for config.toml — top-level 
   assert.equal(table, '[model_providers.botlite]\nname = "botlite"\nbase_url = "https://proxy.example/backend-api/codex"\nwire_api = "responses"\nrequires_openai_auth = true')
   assert.ok(!top.includes('[')) // no table in the part that goes before agent-tooling's
   assert.throws(() => codexConfig('https://x.example/"\n[evil]'), /bad proxy url/)
+  // The job token rides every request: plain http only to this machine.
+  assert.throws(() => codexConfig('http://proxy.example'), /bad proxy url/)
+  assert.throws(() => codexConfig('http://127.0.0.1.evil.example'), /bad proxy url/)
+  assert.doesNotThrow(() => codexConfig('http://127.0.0.1:8788'))
 })
 
 test('codexArgs: a reasoning effort becomes model_reasoning_effort; neither it nor the model can inject config', () => {
