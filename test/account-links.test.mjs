@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { linearLink } from '../src/linear-link.mjs'
+import { accountLinks } from '../src/account-links.mjs'
 import { userLogins } from '../src/userlogins.mjs'
 import { createProxy } from '../src/proxy.mjs'
 
@@ -18,14 +18,14 @@ async function setup(t) {
     calls.push({ url, body: init.body })
     return Response.json(url.endsWith('/register') ? { client_id: 'test-client' } : tokenResult)
   }
-  const store = userLogins({ dir, kinds: { linear: 'key-or-oauth' }, fetchImpl })
-  const link = linearLink({ baseUrl: () => 'https://controller.example', userLogins: store, fetchImpl, now: () => clock })
+  const store = userLogins({ dir, kinds: { linear: 'key-or-oauth', notion: 'oauth' }, fetchImpl })
+  const link = accountLinks({ baseUrl: () => 'https://controller.example', userLogins: store, fetchImpl, now: () => clock })
   const server = createProxy({ linking: link.handle })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   t.after(async () => { server.close(); await rm(dir, { recursive: true, force: true }) })
   const call = (url, options = {}) => fetch(`http://127.0.0.1:${server.address().port}${new URL(url).pathname}${new URL(url).search}`, { redirect: 'manual', ...options })
-  async function start(user = 'U1') {
-    const url = link.begin(user)
+  async function start(user = 'U1', service = 'linear') {
+    const { url } = link.begin(service, user)
     const page = await call(url)
     assert.equal(page.status, 200)
     assert.match(page.headers.get('set-cookie'), /Secure; HttpOnly; SameSite=Lax/)
@@ -33,7 +33,7 @@ async function setup(t) {
     const redirect = await call(url, { method: 'POST', headers: { cookie } })
     assert.equal(redirect.status, 303)
     const auth = new URL(redirect.headers.get('location'))
-    const callback = `${auth.searchParams.get('redirect_uri')}?state=${auth.searchParams.get('state')}&code=test-code&iss=https://mcp.linear.app`
+    const callback = `${auth.searchParams.get('redirect_uri')}?state=${auth.searchParams.get('state')}&code=test-code&iss=${auth.origin}`
     return { url, auth, callback, cookie }
   }
   return { link, store, start, call, calls, advance: (ms) => { clock += ms }, tokenResult: (value) => { tokenResult = value } }
@@ -71,7 +71,7 @@ test('Linear links are private capabilities: bad state, cross-browser, expiry, d
   assert.equal((await call(first.callback.replace(/state=[^&]+/, 'state=wrong'), { headers: { cookie: first.cookie } })).status, 410)
   const second = await start('U2')
   assert.equal((await call(first.callback, { headers: { cookie: second.cookie } })).status, 403)
-  const replacement = link.begin('U1')
+  const { url: replacement } = link.begin('linear', 'U1')
   assert.equal((await call(first.callback, { headers: { cookie: first.cookie } })).status, 410)
   assert.equal((await call(replacement, { method: 'POST' })).status, 403)
   const denied = second.callback.replace('code=test-code', 'error=access_denied')
@@ -96,4 +96,34 @@ test('invalid issuer and incomplete tokens never replace a working login or leak
   assert.equal(failed.status, 502)
   assert.doesNotMatch(await failed.text(), /test-provider-secret|test-rejected/)
   assert.equal(await (await store.forUser('U1')).linear.token(), 'test-access')
+})
+
+test('Notion keeps its registration, callback, lifetime and refreshed login separate from Linear and other people', async (t) => {
+  const { link, store, start, call, calls } = await setup(t)
+  assert.throws(() => link.begin('notion U2', 'U1'), /Use \/link/)
+  const linear = await start()
+  const notion = await start('U1', 'notion')
+  assert.equal(notion.auth.origin, 'https://mcp.notion.com')
+  assert.equal(notion.auth.searchParams.get('scope'), 'default')
+  assert.equal(notion.auth.searchParams.get('resource'), 'https://mcp.notion.com/mcp')
+  const registrations = calls.filter((c) => c.url.endsWith('/register'))
+  assert.equal(registrations.length, 2)
+  assert.deepEqual(JSON.parse(registrations[1].body).redirect_uris, ['https://controller.example/link/notion/callback'])
+  const crossed = notion.callback.replace('/link/notion/', '/link/linear/')
+  assert.equal((await call(crossed, { headers: { cookie: notion.cookie } })).status, 410)
+  assert.equal((await call(notion.callback, { headers: { cookie: linear.cookie } })).status, 403)
+  assert.equal((await call(notion.callback, { headers: { cookie: notion.cookie } })).status, 200)
+  assert.equal(calls.at(-1).url, 'https://mcp.notion.com/token')
+  const exchange = new URLSearchParams(calls.at(-1).body)
+  assert.equal(notion.auth.searchParams.get('code_challenge'), createHash('sha256').update(exchange.get('code_verifier')).digest('base64url'))
+  assert.equal((await stat(store.fileFor('notion', 'U1'))).mode & 0o777, 0o600)
+  const record = JSON.parse(await readFile(store.fileFor('notion', 'U1'), 'utf8'))
+  assert.equal(record.max_age_days, 180)
+  assert.equal(record.token_endpoint, 'https://mcp.notion.com/token')
+  const login = (await store.forUser('U1')).notion
+  await login.refresh()
+  assert.equal(new URLSearchParams(calls.at(-1).body).get('grant_type'), 'refresh_token')
+  assert.equal((await store.forUser('U2')).notion.ready(), false)
+  assert.equal((await call(notion.callback, { headers: { cookie: notion.cookie } })).status, 410)
+  assert.equal((await call(linear.callback, { headers: { cookie: linear.cookie } })).status, 200)
 })

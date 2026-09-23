@@ -197,7 +197,7 @@ test('prompts: the tools, their names and whose account they use; changes only w
 
 test('Slack prompts: guide someone to link their own tool when they have not, and use only their access', () => {
   const p = slackSessionPrompt({ ...talk, linkable: ['linear', 'notion'] })
-  assert.match(p, /hasn't linked their Linear and Notion yet[\s\S]*\/link linear[\s\S]*node deploy\/ctl\.mjs link <notion> <their Slack id>[\s\S]*use their own access, never anyone else's/)
+  assert.match(p, /hasn't linked their Linear and Notion yet[\s\S]*\/link linear[\s\S]*\/link notion[\s\S]*use their own access, never anyone else's/)
   assert.doesNotMatch(slackSessionPrompt(talk), /hasn't linked their/) // nothing to link → no note
   assert.match(slackFollowUpPrompt({ ...talk, linkable: ['google'] }), /hasn't linked their Google Workspace yet/)
   assert.doesNotMatch(slackFollowUpPrompt(talk), /hasn't linked their/)

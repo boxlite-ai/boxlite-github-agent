@@ -5,6 +5,11 @@ import { slackChannel } from '../src/slack-channel.mjs'
 test('a non-admin links only themselves through a private reply, without a Codex turn or quota', async (t) => {
   const calls = []
   const bound = []
+  const begin = (service, user) => {
+    bound.push([service, user])
+    if (!['linear', 'notion'].includes(service)) throw new Error('Use /link linear or /link notion.')
+    return { url: 'https://controller.example/private-link', label: service === 'notion' ? 'Notion' : 'Linear' }
+  }
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const method = new URL(url).pathname.split('/').pop()
     const params = Object.fromEntries(new URLSearchParams(init.body))
@@ -28,7 +33,7 @@ test('a non-admin links only themselves through a private reply, without a Codex
     tokens: { bot: 'test', app: 'test' }, cfg: { boxDeleteSec: 900, slackDailyLimit: 1 }, slackState: state,
     persist() {}, draining: () => false, log() {}, status() {},
     schedule: () => assert.fail('linking must not start a turn'), commands: { run: () => assert.fail('linking must not require an admin') },
-    linear: { begin: (user) => { bound.push(user); return 'https://controller.example/private-link' } },
+    links: { begin },
   })
   t.after(() => channel.stop())
   channel.start()
@@ -40,13 +45,18 @@ test('a non-admin links only themselves through a private reply, without a Codex
     await channel.settle()
   }
   await message('U1', '<@UBOT> /link linear')
-  assert.deepEqual(bound, ['U1'])
+  assert.deepEqual(bound, [['linear', 'U1']])
   assert.deepEqual(calls.at(-1), { method: 'chat.postEphemeral', params: { channel: 'C1', user: 'U1', text: '<https://controller.example/private-link|Connect your Linear account>. This private link expires in 10 minutes. Then ask me in a DM.' } })
   await message('U2', '/link linear', true)
-  assert.deepEqual(bound, ['U1', 'U2'])
+  assert.deepEqual(bound, [['linear', 'U1'], ['linear', 'U2']])
+  await message('U2', '<@UBOT> /link notion')
+  assert.deepEqual(bound.at(-1), ['notion', 'U2'])
+  assert.match(calls.at(-1).params.text, /Connect your Notion account/)
+  assert.equal(calls.at(-1).params.user, 'U2')
   await message('U1', '<@UBOT> /link linear U2')
   await message('UGUEST', '<@UBOT> /link linear')
-  assert.deepEqual(bound, ['U1', 'U2'])
+  assert.equal(bound.filter(([service]) => service === 'notion').length, 1)
+  assert.equal(bound.some(([, user]) => user === 'UGUEST'), false)
   assert.equal(calls.some((c) => c.method === 'chat.postMessage'), false)
   assert.deepEqual(state.usage, {})
 })
