@@ -23,8 +23,9 @@
 //           BOXLITE_SECRET_SLACK_BOT / _SLACK_APP placeholders, or <state dir>/slack-bot-token +
 //           slack-app-token (ctl slack-tokens) — no restart needed
 //   Tools   optional and per person: each Slack user binds their OWN Linear / Notion / Google
-//           login from Slack (/link linear, /link notion) or ctl, kept under <state dir>/user-logins/
+//           login from Slack (/link <service>) or ctl, kept under <state dir>/user-logins/
 //           (src/userlogins.mjs). No shared bot login; none on GitHub.
+//           Google browser linking uses <state dir>/google-web-client.json (ctl google-client).
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SLACK_VOLUME
 //   (botlite-slack-context), SESSION_IMAGE (node), SESSION_CPUS (2), SESSION_MEMORY_MIB (4096),
@@ -54,7 +55,7 @@ import { planWrite, planSlackWrite, publishWrite } from './publish.mjs'
 import { selfBuild, deployPlan, markGood, goodBuild, cleanExit, failTrial, takeRollback, deployOutcome, pendingAfter, recordedBranch, recordBranch, TRIAL_MS, TRIAL_TURN, trialTurnFailure } from './deploy.mjs'
 import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
-import { toolBroker, SERVICES } from './tools.mjs'
+import { toolBroker, SERVICES, googleScopes } from './tools.mjs'
 import { userLogins } from './userlogins.mjs'
 import { accountLinks } from './account-links.mjs'
 import { TOOLS, SLACK_PR_REPOS } from './policy.mjs'
@@ -170,7 +171,8 @@ const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn
 // user: OAuth, with legacy Linear API keys still supported.
 const loginKinds = Object.fromEntries([...new Set(Object.values(SERVICES).map((s) => s.login))].map((n) => [n, n === 'linear' ? 'key-or-oauth' : 'oauth']))
 const userTools = userLogins({ dir: path.join(stateDir, 'user-logins'), kinds: loginKinds })
-const links = accountLinks({ baseUrl: () => proxyUrl, userLogins: userTools, linearScope: TOOLS.linear.write.length ? 'read write' : 'read' })
+const links = accountLinks({ baseUrl: () => proxyUrl, userLogins: userTools, linearScope: TOOLS.linear.write.length ? 'read write' : 'read',
+  googleScopes: googleScopes(TOOLS), googleClient: async () => JSON.parse(await readFile(path.join(stateDir, 'google-web-client.json'), 'utf8')) })
 const tools = toolBroker({ secret: jobSecret, jobs, policy: TOOLS, log }) // whose login a turn uses is set on its job
 
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */

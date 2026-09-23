@@ -2,13 +2,15 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
+import { SERVICES } from './tools.mjs'
 
 const fresh = () => randomBytes(32).toString('base64url')
 
-export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchImpl = fetch, now = Date.now }) {
+export function accountLinks({ baseUrl, userLogins, linearScope = 'read', googleScopes = [], googleClient = async () => null, fetchImpl = fetch, now = Date.now }) {
   const providers = {
     linear: { label: 'Linear', issuer: 'https://mcp.linear.app', resource: 'https://mcp.linear.app/mcp', scope: linearScope },
     notion: { label: 'Notion', issuer: 'https://mcp.notion.com', resource: 'https://mcp.notion.com/mcp', scope: 'default', max_age_days: 180 },
+    google: { label: 'Google Workspace', issuer: 'https://accounts.google.com', authorization: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token', scope: googleScopes.join(' '), params: { access_type: 'offline', prompt: 'consent select_account' } },
   }
   const pending = new Map()
   const registrations = new Map()
@@ -25,10 +27,16 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchI
     for (const [state, flow] of pending) if (flow.expires <= now()) pending.delete(state)
   }
   return {
-    begin(service, user) {
-      if (!Object.hasOwn(providers, service)) throw new Error('Use /link linear or /link notion to connect your own account.')
+    async begin(service, user) {
+      service = Object.hasOwn(SERVICES, service) ? SERVICES[service].login : service === 'google workspace' ? 'google' : service
+      if (!Object.hasOwn(providers, service)) throw new Error('Use /link linear, /link notion or /link google to connect your own account.')
       const provider = providers[service]
       const file = userLogins.fileFor(service, user)
+      let configuredClient
+      if (service === 'google') {
+        configuredClient = await googleClient().catch(() => null)
+        if (!configuredClient?.client_id || !configuredClient?.client_secret) throw new Error('Google Workspace linking needs administrator setup: ask an admin to configure the Google web OAuth client.')
+      }
       const base = new URL(baseUrl())
       if (base.protocol !== 'https:') throw new Error('Account linking requires a public HTTPS URL')
       prune()
@@ -40,7 +48,7 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchI
       if (pending.size >= 1000) throw new Error('Too many logins in progress; try again later')
       const state = fresh()
       const prefix = `/link/${service}`
-      pending.set(state, { user, service, file, redirect: `${base.origin}${prefix}/callback`, browser: fresh(), verifier: fresh(), expires: now() + 600_000 })
+      pending.set(state, { user, service, file, configuredClient, redirect: `${base.origin}${prefix}/callback`, browser: fresh(), verifier: fresh(), expires: now() + 600_000 })
       return { url: `${base.origin}${prefix}/start?state=${state}`, label: provider.label }
     },
     async handle(req, res) {
@@ -52,7 +60,8 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchI
       const url = new URL(req.url, 'https://controller.invalid')
       const [, service, step] = /^\/link\/([a-z]+)\/(start|callback)$/.exec(url.pathname) ?? []
       if (!Object.hasOwn(providers, service)) return send(404, 'Not found')
-      const { label, issuer, resource, scope, max_age_days } = providers[service]
+      const { label, issuer, resource, scope, max_age_days, authorization = `${issuer}/authorize`, token = `${issuer}/token`, params: consentParams } = providers[service]
+      const audience = resource ? { resource } : {}
       const prefix = `/link/${service}`
       const retry = `Run /link ${service} in Slack again.`
       if (!['GET', 'POST'].includes(req.method)) return send(405, 'Method not allowed')
@@ -72,14 +81,14 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchI
         if (step === 'start') {
           if (flow.started) return send(409, `This login has already started. ${retry}`)
           flow.started = true
-          if (!registrations.has(flow.redirect)) {
+          if (!flow.configuredClient && !registrations.has(flow.redirect)) {
             const registration = post(`${issuer}/register`, { client_name: 'BoxLite for Slack', redirect_uris: [flow.redirect], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }, true).catch((e) => { registrations.delete(flow.redirect); throw e })
             registrations.set(flow.redirect, registration)
           }
-          flow.client = await registrations.get(flow.redirect)
+          flow.client = flow.configuredClient ?? await registrations.get(flow.redirect)
           if (!flow.client.client_id) throw new Error('Provider did not register a client')
-          const params = new URLSearchParams({ response_type: 'code', client_id: flow.client.client_id, redirect_uri: flow.redirect, state, scope, resource, code_challenge_method: 'S256', code_challenge: createHash('sha256').update(flow.verifier).digest('base64url') })
-          return res.writeHead(303, { location: `${issuer}/authorize?${params}` }).end()
+          const params = new URLSearchParams({ response_type: 'code', client_id: flow.client.client_id, redirect_uri: flow.redirect, state, scope, ...audience, ...consentParams, code_challenge_method: 'S256', code_challenge: createHash('sha256').update(flow.verifier).digest('base64url') })
+          return res.writeHead(303, { location: `${authorization}?${params}` }).end()
         }
         if (req.method !== 'GET') return send(405, 'Method not allowed')
         if (!flow.client) return send(400, 'Start the login from Slack first.')
@@ -95,10 +104,10 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', fetchI
           return send(400, `Invalid ${label} authorization response.`)
         }
         const client = flow.client
-        const tokens = await post(`${issuer}/token`, { grant_type: 'authorization_code', code, client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}), redirect_uri: flow.redirect, code_verifier: flow.verifier, resource })
+        const tokens = await post(token, { grant_type: 'authorization_code', code, client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}), redirect_uri: flow.redirect, code_verifier: flow.verifier, ...audience })
         if (!tokens.access_token || !tokens.refresh_token || !(Number(tokens.expires_in) > 0)) throw new Error('Incomplete token response')
         if (pending.get(state) !== flow || flow.expires <= now()) throw new Error('Login expired')
-        const record = { token_endpoint: `${issuer}/token`, client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}), resource, access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: now() + Number(tokens.expires_in) * 1000, linked_at: new Date(now()).toISOString(), ...(max_age_days ? { max_age_days } : {}) }
+        const record = { token_endpoint: token, client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}), ...audience, access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_at: now() + Number(tokens.expires_in) * 1000, linked_at: new Date(now()).toISOString(), ...(max_age_days ? { max_age_days } : {}) }
         await mkdir(path.dirname(flow.file), { recursive: true, mode: 0o700 })
         const temp = `${flow.file}.${state}.tmp`
         await writeFile(temp, JSON.stringify(record), { mode: 0o600 })

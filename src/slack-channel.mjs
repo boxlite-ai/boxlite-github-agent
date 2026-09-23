@@ -199,7 +199,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
       now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
-      `• \`@${bot.name} /link linear\` or \`/link notion\` — connect your account, then use it in a DM with me`,
+      `• \`@${bot.name} /link linear\`, \`/link notion\` or \`/link google\` — connect your account, then use it in a DM with me`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
       ...(cfg.slackDailyLimit ? ['', `You have ${Math.max(0, cfg.slackDailyLimit - used)} of ${cfg.slackDailyLimit} requests left today (resets at 00:00 UTC).`] : []),
     ].join('\n')
@@ -226,7 +226,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     if (service !== null) {
       let text
       try {
-        const { url, label } = links.begin(service, req.user)
+        const { url, label } = await links.begin(service, req.user)
         text = `<${url}|Connect your ${label} account>. This private link expires in 10 minutes. Then ask me in a DM.`
       } catch (e) {
         text = e.message

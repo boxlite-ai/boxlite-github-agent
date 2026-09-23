@@ -123,10 +123,12 @@ same state: `@boxliteai /model …`, `/deploy` (it reports back in that Slack th
 `/resume`, so one `/pause` stops PR writing on both. `/add`, `/remove` and `/list` stay on GitHub:
 in Slack every member may ask for PRs.
 
-Every Slack member can send `@boxliteai /link linear` or `@boxliteai /link notion` (omit the
-mention in a DM). Open the private, ten-minute link and approve your account. The browser confirms
+Every Slack member can send `@boxliteai /link linear`, `/link notion` or `/link google` (include
+the mention in channels). Open the private, ten-minute link and approve your account. The browser confirms
 when connected; your next DM request uses your account. A new command replaces an unfinished
 link, and a controller restart expires unfinished links. Linked accounts survive restarts.
+`/link drive`, `/link docs`, `/link sheets`, `/link slides`, `/link calendar` and
+`/link google workspace` all connect the same Google account for the enabled Workspace tools.
 
 `/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
 pinned Codex, since a bad one would fail every turn.
@@ -245,7 +247,7 @@ answered Dorian, changed: Linear save_issue · Notion notion-create-pages
 | | Linear | Notion | Google Workspace |
 |---|---|---|---|
 | What it sees | what that member sees | the pages shared with it | files and calendars shared with it |
-| A Slack person links their own | `@boxliteai /link linear` | `@boxliteai /link notion` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
+| A Slack person links their own | `@boxliteai /link linear` | `@boxliteai /link notion` | `@boxliteai /link google` |
 | Lasts | until revoked; OAuth tokens refresh automatically | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
 
 **Linking a Slack person** binds their own token, keyed to their Slack id — the `U…` in the log's
@@ -264,9 +266,15 @@ they haven't linked, the bot tells them to link it first and does nothing else w
 - **Google:** the Workspace MCP servers are in a
   [Developer Preview](https://developers.google.com/workspace/guides/configure-mcp-servers). Join it,
   then in a Cloud project enable the Drive, Docs, Sheets, Slides and Calendar APIs and their MCP
-  APIs, set the OAuth consent screen to *Internal*, and create an OAuth client of type *Desktop
-  app*. The login asks only for the scopes your tool policy needs; after you allow a new kind of
-  change, run it again.
+  APIs, and set the OAuth consent screen to *Internal*. For Slack linking, create a **Web
+  application** OAuth client with the exact authorized redirect URI
+  `https://<controller-public-host>/link/google/callback`. Hand it to the controller once:
+  `GOOGLE_WEB_CLIENT_ID=… GOOGLE_WEB_CLIENT_SECRET=… node deploy/ctl.mjs google-client`.
+  The client stays on the controller, takes effect without restarting, and grants no user access
+  by itself: each person chooses their account and approves consent. Missing setup gives a private
+  administrator-setup message. Scopes come from the tool policy; link again after allowing new tools.
+  Terminal linking still uses a separate *Desktop app* client through
+  `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>`.
 
 Terminal logins run on your machine and hand tokens to the controller. Slack's browser linking
 exchanges the authorization code on the controller; neither Slack nor a session box gets tokens.
