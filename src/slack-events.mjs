@@ -2,9 +2,9 @@
 // of it is unit-tested.
 //
 // A request is a new message from a person that either mentions the bot (`app_mention`, in any
-// channel the bot was added to) or is sent to the bot directly (`message.im`). Its answer goes in
-// the message's thread, and the thread — workspace, channel, parent message — is what a box, a
-// Codex session and a sealed context belong to.
+// channel the bot was added to) or is sent to the bot directly (`message.im`). Each requester has
+// a private answer, box, session and sealed context within the thread. session.mjs derives the key
+// from workspace, channel and parent message, plus the requester for channels.
 
 // Subtypes of a person writing something new; every other one (edits, deletions, joins, bot posts…)
 // is not a request.
@@ -29,7 +29,7 @@ export function requestFromEvent(payload, bot) {
     team: payload.team_id,
     channel: e.channel,
     ts: e.ts,
-    threadTs: e.thread_ts || e.ts, // a top-level message starts the thread its answer goes into
+    threadTs: e.thread_ts || e.ts, // a top-level message starts a new session for this requester
     isDM: e.channel_type === 'im' || e.channel.startsWith('D'),
     user: e.user,
     text: e.text ?? '',

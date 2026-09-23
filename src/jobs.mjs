@@ -1,9 +1,9 @@
 // Scheduling: at most `max` sessions working at once across the org, and one request at a time
-// per thread (its box, checkout and Codex session are shared state); FIFO otherwise.
+// per session key (its box, checkout and Codex session are shared state); FIFO otherwise.
 export function scheduler(max) {
   let active = 0
   const waiting = []
-  const tails = new Map() // thread key → promise of its latest job
+  const tails = new Map() // session key → promise of its latest job
 
   const acquire = () =>
     new Promise((resolve) => {

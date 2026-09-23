@@ -1,14 +1,13 @@
 // Slack: the bot's second place to be asked, beside GitHub. A Socket Mode connection the
 // controller dials out (slack-socket.mjs) brings each message that mentions the bot, or is sent to
-// it directly; each becomes one Codex turn in that thread's own box, and the answer goes back in
-// the thread. Who may ask is decided here, by the workspace's rules (policy.mjs: members only),
-// before any box starts; the team's tools come with every turn, since everyone who can ask may
-// read what the bot's accounts read. It does all the bot does on GitHub, too: a turn may open a
+// it directly; each becomes one Codex turn in the requester's box for that thread, with a private
+// answer. Who may ask is decided here, by the workspace's rules (policy.mjs: members only),
+// before any box starts; tools use only that person's linked accounts. A turn may also open a
 // draft PR into a repo policy.mjs allows (asked for by its box when the work is done: prgrant.mjs),
 // and the workspace's admins run the bot's commands (`@bot /model`, `/deploy`, `/pause`…).
 //
 // A Slack thread lives apart from GitHub ones (session.mjs: `slack`): its own boxes, volume and
-// context key. Its memory is state.slack — handled messages, each thread's Codex session, daily
+// context key. Its memory is state.slack — handled messages, each requester's session, daily
 // usage, and requests kept for the next controller when this one is shutting down (Slack pushes an
 // event once; a restart must not drop it).
 import { slack } from './slack.mjs'
@@ -64,7 +63,8 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
 
   /**
    * What was said in the thread before the request, as the prompt shows it: for a new session its
-   * first message and the latest 30, for a follow-up what others said since the bot's last turn.
+   * first message and the latest 30, for a follow-up messages since the last turn. In channels,
+   * only the requester's messages belong to this session.
    * Best effort — without it (a scope missing, Slack throttling) the request is still answered.
    */
   async function transcript(req, sinceTs) {
@@ -82,7 +82,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       return []
     }
     const mine = (m) => m.user === bot.userId || (m.bot_id && m.bot_id === bot.botId)
-    const before = messages.filter((m) => tsBefore(m.ts, req.ts) && (!sinceTs || (tsBefore(sinceTs, m.ts) && !mine(m))))
+    const before = messages.filter((m) => (req.isDM || m.user === req.user) && tsBefore(m.ts, req.ts) && (!sinceTs || (tsBefore(sinceTs, m.ts) && !mine(m))))
     const kept = sinceTs ? before.slice(-30) : before.length <= 31 ? before : [before[0], ...before.slice(-30)]
     const names = await namesOf(kept.flatMap((m) => [m.user, ...mentionedIds(m.text)]))
     return kept.map((m) => threadLine(m, names, bot))
@@ -146,26 +146,22 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     try {
       const known = slackState.threads[key]?.sessionId ? slackState.threads[key] : null
       // Each person uses their OWN tool logins (userlogins.mjs): the bot only reads what they can.
-      // Only in a DM, though — a channel thread has many requesters, and its session, sealed context
-      // and working directory are the thread's, not the person's, so a follow-up by someone else
-      // would resume the first person's context (and now their own login). A DM is one requester.
+      // Channel keys include the requester: no shared session, snapshot, working directory or queue.
       const [asker, files, names, userLog] = await Promise.all([person(req.user), attachments(req), namesOf(mentionedIds(req.text)), userLogins.forUser(req.user)])
-      const services = req.isDM ? enabledServices(userLog, policy) : []
-      const linkable = req.isDM ? Object.keys(userLogins.kinds).filter((name) => !userLog[name]?.ready()) : [] // could bind, hasn't
-      const dmForTools = !req.isDM && Object.values(userLog).some((l) => l.ready()) // has tools, but is in a channel
+      const services = enabledServices(userLog, policy)
+      const linkable = Object.keys(userLogins.kinds).filter((name) => !userLog[name]?.ready())
       const prsNow = await prs.status()
-      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, linkable, dmForTools, prs: prsNow }
-      // The login the turn uses is this person's own, and only in a DM (a channel gets no team tools).
-      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name), logins: req.isDM ? userLog : {} }
+      const talk = { bot: bot.name, workspace: bot.teamName, place: req.isDM ? 'a direct message' : 'a channel', permalink: permalink(bot.url, req), asker: displayName(asker), text: plainText(req.text, names), files, ttl, services, linkable, privateReply: !req.isDM, prs: prsNow }
+      const job = { who: `${talk.asker} (${req.user})`, writes: [], tools: services.map((s) => s.name), logins: userLog }
       // A PR is planned only when the box asks for it, for the request's own branch (publish.mjs).
       if (prsNow.ok) job.pr = { grant: (want) => grantPr(want, job, `${key}@${req.ts}`) }
       const fresh = async () => slackSessionPrompt({ ...talk, history: await transcript(req) })
       const prompt = known ? slackFollowUpPrompt({ ...talk, since: await transcript(req, known.lastTs) }) : await fresh()
-      // The thread's box keeps the name it got first, whoever asks now and whatever the channel is called.
+      // The person's box keeps its first label even when the channel or their display name changes.
       const label = slackState.threads[key]?.label ?? threadLabel(req, { asker, channel: req.isDM ? '' : await channelName(req.channel) })
       let out = await turn(key, label, prompt, known?.sessionId, files.saved, services, job)
       if (out.sessionLost) {
-        log(`${key}: session ${known.sessionId} is gone; starting over with the whole thread`)
+        log(`${key}: session ${known.sessionId} is gone; starting over with this requester's history`)
         out = await turn(key, label, await fresh(), null, files.saved, services, job)
       }
       slackState.threads[key] = { sessionId: out.sessionId ?? null, lastTs: req.ts, lastUsed: new Date().toISOString(), label }
@@ -179,11 +175,11 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       } else {
         log(`${key}: no answer — ${out.error}`)
         const changed = job.writes.length ? `\nIt did make changes before it stopped, as the bot: ${tally(job.writes)}.` : ''
-        await say(sk, req, `<@${req.user}> sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${changed}${pr ? `\n${pr}` : ''}`)
+        await whisper(sk, req, `Sorry, I couldn't finish this one — the run failed on my side. Please try again in a bit.${changed}${pr ? `\n${pr}` : ''}`)
       }
     } catch (e) {
       log(`${key}: ${e.stack || e.message}`)
-      await say(sk, req, `<@${req.user}> sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
+      await whisper(sk, req, `Sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
     }
   }
 
@@ -195,11 +191,11 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `I'm a coding agent. Ask me a question or give me a task and I work on it in my own isolated <https://boxlite.ai|BoxLite> microVM — a full shell and network, so I run things before I answer — then reply in the thread.`,
       '',
       `• \`@${bot.name} <question or task>\` in a channel I'm in, or message me directly`,
-      `• follow up in the same thread${req.isDM ? '' : ' (mention me again)'}: I remember it, and its files stay on my machine until it's been quiet for ${ttl}`,
+      `• follow up in the same thread${req.isDM ? '' : ' (mention me again): your replies and session are private to you'}; its files stay on my machine until it's been quiet for ${ttl}`,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
       now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
-      `• \`@${bot.name} /link linear\`, \`/link notion\` or \`/link google\` — connect your account, then use it in a DM with me`,
+      `• \`@${bot.name} /link linear\`, \`/link notion\` or \`/link google\` — connect your account for your private replies`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
       ...(cfg.slackDailyLimit ? ['', `You have ${Math.max(0, cfg.slackDailyLimit - used)} of ${cfg.slackDailyLimit} requests left today (resets at 00:00 UTC).`] : []),
     ].join('\n')
@@ -227,7 +223,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       let text
       try {
         const { url, label } = await links.begin(service, req.user)
-        text = `<${url}|Connect your ${label} account>. This private link expires in 10 minutes. Then ask me in a DM.`
+        text = `<${url}|Connect your ${label} account>. This private link expires in 10 minutes. Only you can use this connection.`
       } catch (e) {
         text = e.message
       }
@@ -265,7 +261,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
   function enqueue(req, via = 'slack') {
     accepting = accepting.then(() => accept(req, via)).catch((e) => {
       log(`${req.id}: ${e.stack || e.message}`)
-      say(sk, req, `<@${req.user}> sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
+      whisper(sk, req, `Sorry, something went wrong on my side. Please try again in a bit.`).catch(() => {})
     })
   }
 

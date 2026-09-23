@@ -203,15 +203,15 @@ test('Slack prompts: guide someone to link their own tool when they have not, an
   assert.doesNotMatch(slackFollowUpPrompt(talk), /hasn't linked their/)
 })
 
-test('prompts: GitHub has no team tools at all — they are per-person and Slack-DM-only', () => {
+test('prompts: GitHub has no team tools at all — they are per-person and Slack-only', () => {
   const p = newSessionPrompt({ login: 'botlite', req, pr, write: { allowed: false, why: 'x' } })
   assert.doesNotMatch(p, /You also have tools|This thread is public|mcp__/)
   assert.match(p, /You hold no credentials, so your\nshell reaches only what's public\./)
   assert.doesNotMatch(followUpPrompt({ login: 'botlite', req, pr }), /Tools this turn|mcp__/)
 })
 
-test('Slack prompts: in a channel the team tools are unavailable and the bot is told to say DM me', () => {
-  assert.match(slackSessionPrompt({ ...talk, dmForTools: true }), /This is a channel, so the team tools \(Linear, Notion, Google\) aren't available[\s\S]*work only in a direct message[\s\S]*tell them to DM you/)
-  assert.doesNotMatch(slackSessionPrompt(talk), /This is a channel, so the team tools/) // a DM, or nothing linked
-  assert.match(slackFollowUpPrompt({ ...talk, dmForTools: true }), /aren't available: they act as one person's own account/)
+test('Slack prompts: channel replies and context are private to the requester; publishing needs their explicit request', () => {
+  assert.match(slackSessionPrompt({ ...talk, privateReply: true }), /visible only to the requester[\s\S]*Other members have separate sessions[\s\S]*current request explicitly asks/)
+  assert.doesNotMatch(slackSessionPrompt(talk), /Your reply in this channel/) // DMs have ordinary persistent replies
+  assert.match(slackFollowUpPrompt({ ...talk, privateReply: true }), /visible only to the requester/)
 })
