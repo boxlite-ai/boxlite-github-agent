@@ -44,6 +44,13 @@ export function isHelp(text, bot) {
   return /^\s*\/?help[.!?]*\s*$/i.test(rest)
 }
 
+/** /link is a Slack member command, including without a mention in a DM. */
+export function linkCommand(req, bot) {
+  const text = req.text.trim().replace(new RegExp(`^<@${escapeRe(bot.userId)}(\\|[^>]*)?>\\s*`), '')
+  if (!req.isDM && text === req.text.trim()) return null
+  return /^\/link(?:\s|$)/i.test(text) ? text.slice(5).trim().toLowerCase() : null
+}
+
 /** The name a person goes by in the workspace. */
 export const displayName = (user) => user?.profile?.display_name || user?.real_name || user?.name || user?.id || 'someone'
 
