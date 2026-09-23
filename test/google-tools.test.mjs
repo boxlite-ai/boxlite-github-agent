@@ -12,11 +12,13 @@ test('Google policy enables requested creations and edits, but no mail sending o
   }
   assert.deepEqual(TOOLS.gmail, { read: [], write: ['create_draft'] })
   assert.equal(TOOLS.calendar.write.includes('delete_event'), false)
-  const scopes = googleScopes(TOOLS)
-  for (const scope of ['gmail.compose', 'calendar.app.created', 'calendar.events', 'drive.file', 'documents', 'spreadsheets', 'presentations']) {
-    assert.ok(scopes.includes(`https://www.googleapis.com/auth/${scope}`), scope)
-  }
-  assert.equal(scopes.includes('https://mail.google.com/'), false)
+  assert.deepEqual(new Set(googleScopes(TOOLS)), new Set([
+    'openid', 'email', ...[
+      'drive.readonly', 'drive.file', 'documents.readonly', 'documents',
+      'spreadsheets.readonly', 'spreadsheets', 'presentations.readonly', 'presentations',
+      'calendar.readonly', 'calendar.events', 'calendar.app.created', 'gmail.compose',
+    ].map((scope) => `https://www.googleapis.com/auth/${scope}`),
+  ]))
 })
 
 async function fixture(t) {
