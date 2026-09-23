@@ -35,11 +35,17 @@ test('TOOLS: every service lists reads and writes as tool names, and nothing is 
   }
 })
 
-test('TOOLS as shipped: new things and comments — nothing that deletes, moves, shares or overwrites', async () => {
+test('TOOLS as shipped: explicit create/edit tools, invitations and drafts; no deletion, sharing or mail sending tools', async () => {
   const { TOOLS } = await import('../src/policy.mjs')
   const writes = Object.fromEntries(Object.entries(TOOLS).filter(([, t]) => t.write.length).map(([s, t]) => [s, t.write]))
-  assert.deepEqual(writes, { linear: ['save_comment', 'save_issue'], notion: ['notion-create-comment', 'notion-create-pages'] })
-  for (const tool of Object.values(writes).flat()) assert.doesNotMatch(tool, /delete|move|share|trash|update|duplicate|copy/, tool)
+  assert.deepEqual(writes, {
+    linear: ['save_comment', 'save_issue'], notion: ['notion-create-comment', 'notion-create-pages'],
+    drive: ['create_file', 'copy_file'], docs: ['update_doc'],
+    sheets: ['update_values', 'update_formulas', 'update_spreadsheet', 'insert_dimension'],
+    slides: ['update_presentation'], calendar: ['create_event', 'update_event'],
+    calendars: ['create_calendar'], gmail: ['create_draft'],
+  })
+  for (const tool of Object.values(writes).flat()) assert.doesNotMatch(tool, /delete|move|share|trash|send/, tool)
 })
 
 test('mayUse (members only): members of the workspace or its Grid org — not guests, outsiders, or shared channels', () => {
