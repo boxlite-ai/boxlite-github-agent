@@ -5,10 +5,10 @@ import { slackChannel } from '../src/slack-channel.mjs'
 test('a non-admin links only themselves through a private reply, without a Codex turn or quota', async (t) => {
   const calls = []
   const bound = []
-  const begin = (service, user) => {
+  const begin = async (service, user) => {
     bound.push([service, user])
-    if (!['linear', 'notion'].includes(service)) throw new Error('Use /link linear or /link notion.')
-    return { url: 'https://controller.example/private-link', label: service === 'notion' ? 'Notion' : 'Linear' }
+    if (!['linear', 'notion', 'google'].includes(service)) throw new Error('Use /link linear or /link notion.')
+    return { url: 'https://controller.example/private-link', label: service === 'google' ? 'Google Workspace' : service === 'notion' ? 'Notion' : 'Linear' }
   }
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const method = new URL(url).pathname.split('/').pop()
@@ -53,6 +53,9 @@ test('a non-admin links only themselves through a private reply, without a Codex
   assert.deepEqual(bound.at(-1), ['notion', 'U2'])
   assert.match(calls.at(-1).params.text, /Connect your Notion account/)
   assert.equal(calls.at(-1).params.user, 'U2')
+  await message('U1', '<@UBOT> /link google')
+  assert.deepEqual(bound.at(-1), ['google', 'U1'])
+  assert.match(calls.at(-1).params.text, /Connect your Google Workspace account/)
   await message('U1', '<@UBOT> /link linear U2')
   await message('UGUEST', '<@UBOT> /link linear')
   assert.equal(bound.filter(([service]) => service === 'notion').length, 1)

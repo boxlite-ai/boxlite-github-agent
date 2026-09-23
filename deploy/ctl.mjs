@@ -22,6 +22,8 @@
 //   SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… [SLACK_CONTEXT_SECRET=…] node deploy/ctl.mjs slack-tokens
 //                                     hand over the Slack app's tokens (and, taking threads over
 //                                     from another controller, its context secret) the same way
+//   node deploy/ctl.mjs google-client   configure Slack browser linking with GOOGLE_WEB_CLIENT_ID
+//                                     and GOOGLE_WEB_CLIENT_SECRET; no restart needed
 //   node deploy/ctl.mjs link <linear|notion|google> <slack-user>   bind that person's OWN tool
 //                                     token, kept per user (src/userlogins.mjs): the bot uses it
 //                                     only for their requests. Linear takes LINEAR_API_KEY; Notion
@@ -208,6 +210,14 @@ if (cmd === 'status') {
   // The context secret goes first: the controller reads it as Slack starts, once the tokens are in.
   const script = 'umask 077 && mkdir -p ~/.botlite && IFS= read -r bot && IFS= read -r app && IFS= read -r ctx; { [ -z "$ctx" ] || printf %s "$ctx" > ~/.botlite/slack-context-secret; } && printf %s "$bot" > ~/.botlite/slack-bot-token && printf %s "$app" > ~/.botlite/slack-app-token && echo stored'
   report(await sh(script, `${botToken}\n${appToken}\n${contextSecret}\n`), `handed to the controller — it connects to Slack within a minute${contextSecret ? '; if Slack was on already, the context secret applies from its next start (restart)' : ''}`)
+} else if (cmd === 'google-client') {
+  const { GOOGLE_WEB_CLIENT_ID: client_id, GOOGLE_WEB_CLIENT_SECRET: client_secret } = process.env
+  if (!client_id?.trim() || !client_secret?.trim()) {
+    console.error('set GOOGLE_WEB_CLIENT_ID and GOOGLE_WEB_CLIENT_SECRET from a Web application OAuth client (see README)')
+    process.exit(2)
+  }
+  const script = 'umask 077 && mkdir -p ~/.botlite && f=$(mktemp ~/.botlite/google-web-client.XXXXXX) && cat > "$f" && mv "$f" ~/.botlite/google-web-client.json && echo stored'
+  report(await sh(script, JSON.stringify({ client_id, client_secret })), 'Google web client stored — members can now /link google in Slack')
 } else if (cmd === 'link' || cmd === 'unlink' || cmd === 'links') {
   // A Slack person's OWN tool token, kept per user: the bot uses it only for that person's requests
   // (src/userlogins.mjs), so it reads only what they can. `link` runs the same key/OAuth flow as the
@@ -261,6 +271,6 @@ if (cmd === 'status') {
   if (r && r.code !== 0) process.exit(1)
   if (wait) await waitLive({ starts, want: arg, exact: true })
 } else {
-  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | link <service> <user> | unlink <service> <user> | links  (restart, admins, rollback: [--wait] [--includes <sha>])')
+  console.error('usage: node deploy/ctl.mjs status | logs [lines] | webhook | restart | github-token | github-app | admins | hook | rollback <sha> | slack-tokens | google-client | link <service> <user> | unlink <service> <user> | links  (restart, admins, rollback: [--wait] [--includes <sha>])')
   process.exit(2)
 }

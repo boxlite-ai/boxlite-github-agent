@@ -128,9 +128,7 @@ const toolsLine = (services) => {
 const LABELS = { linear: 'Linear', notion: 'Notion', google: 'Google Workspace' }
 function linkNote(linkable = []) {
   if (!linkable.length) return ''
-  const instructions = linkable.map((n) => n === 'google'
-    ? 'For Google Workspace, an admin runs `node deploy/ctl.mjs link google <their Slack id>`.'
-    : `For ${LABELS[n] ?? n}, tell them to send \`/link ${n}\` in this DM and open the private authorization link.`).join(' ')
+  const instructions = linkable.map((n) => `For ${LABELS[n] ?? n}, tell them to send \`/link ${n}\` in this DM and open the private authorization link.`).join(' ')
   return `\nThe person hasn't linked their ${and(linkable.map((n) => LABELS[n] ?? n))} yet, so you can't read it for them. ${instructions} Then you'll use their own access, never anyone else's.\n`
 }
 
