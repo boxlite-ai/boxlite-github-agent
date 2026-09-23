@@ -91,7 +91,7 @@ test('Google aliases link one private account with offline consent, policy scope
   await login.refresh()
   assert.equal(calls.at(-1).url, 'https://oauth2.googleapis.com/token')
   assert.equal(new URLSearchParams(calls.at(-1).body).get('grant_type'), 'refresh_token')
-  for (const alias of ['google', 'google workspace', 'docs', 'sheets', 'slides', 'calendar']) {
+  for (const alias of ['google', 'google workspace', 'docs', 'sheets', 'slides', 'calendar', 'calendars', 'gmail']) {
     const next = await start('U1', alias)
     assert.equal(next.auth.searchParams.get('client_id'), 'test-google-client')
   }

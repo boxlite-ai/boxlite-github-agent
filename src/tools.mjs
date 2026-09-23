@@ -1,7 +1,7 @@
 // Linear, Notion and Google Workspace for Codex, as MCP servers on the controller's public port —
 // /mcp/<service> — guarded the way the model is. A box's Codex presents its job token; the
-// controller checks it, checks the call against the tool policy (access.mjs), swaps in the bot's
-// own credential and forwards the call to the service's official MCP server. No credential of any
+// controller checks it, checks the call against the tool policy (policy.mjs), swaps in the
+// requester's credential and forwards the call to the service. No credential of any
 // of them ever enters a box, and a tool the policy doesn't list can't be called, however Codex is
 // talked to.
 //
@@ -11,6 +11,7 @@
 // tools/call for listed tools. (Codex's `enabled_tools` hides the rest from the model; this is what
 // enforces it.)
 import { verifyJobToken } from './chatgpt.mjs'
+import { calendarMcp } from './calendar-tools.mjs'
 
 const G = 'https://www.googleapis.com/auth/'
 /** The services, their official MCP servers, the login each uses — and for Google, the scopes. */
@@ -22,6 +23,8 @@ export const SERVICES = {
   sheets: { label: 'Google Sheets', url: 'https://sheetsmcp.googleapis.com/mcp/v1', login: 'google', scopes: { read: [`${G}spreadsheets.readonly`], write: [`${G}spreadsheets`] } },
   slides: { label: 'Google Slides', url: 'https://slidesmcp.googleapis.com/mcp/v1', login: 'google', scopes: { read: [`${G}presentations.readonly`], write: [`${G}presentations`] } },
   calendar: { label: 'Google Calendar', url: 'https://calendarmcp.googleapis.com/mcp/v1', login: 'google', scopes: { read: [`${G}calendar.readonly`], write: [`${G}calendar.events`] } },
+  calendars: { label: 'Google Calendars', login: 'google', scopes: { read: [], write: [`${G}calendar.app.created`] } },
+  gmail: { label: 'Gmail', url: 'https://gmailmcp.googleapis.com/mcp/v1', login: 'google', scopes: { read: [], write: [`${G}gmail.compose`] } },
 }
 const SESSION = new Set(['initialize', 'ping', 'tools/list'])
 const REQ_HEADERS = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id']
@@ -111,7 +114,10 @@ export function toolBroker({ secret, jobs, policy, fetchImpl = fetch, log = () =
     res.on('close', () => abort.abort()) // the box hung up → stop the upstream stream
     try {
       const headers = Object.fromEntries(REQ_HEADERS.filter((h) => req.headers[h]).map((h) => [h, req.headers[h]]))
-      const forward = async () => fetchImpl(service.url, { method: req.method, headers: { ...headers, authorization: `Bearer ${await login.token()}` }, body, signal: abort.signal })
+      const forward = async () => {
+        const request = { method: req.method, headers: { ...headers, authorization: `Bearer ${await login.token()}` }, body, signal: abort.signal }
+        return name === 'calendars' ? calendarMcp(request, fetchImpl) : fetchImpl(service.url, request)
+      }
       let up = await forward()
       if (up.status === 401 && login.refresh) {
         await up.body?.cancel()

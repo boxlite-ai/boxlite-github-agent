@@ -7,7 +7,8 @@ install on GitHub: it's a regular GitHub account. Each request runs
 microVM, with a full shell and network, so it can run the code before it answers. Slack gets all of
 that too, draft PRs and the admin commands included. There it also gets the files attached to a
 message, and it can read your team's Linear, Notion and Google Workspace — in Slack as the person
-asking, so only what they can see — and comment and file things in Linear and Notion.
+asking, so only what they can see — and create or edit Workspace documents, calendars and events,
+prepare Gmail drafts, and comment and file things in Linear and Notion.
 
 ```
 @boxliteai why does `npm test` fail on this PR?                        (GitHub)
@@ -129,7 +130,7 @@ Every Slack member can send `@boxliteai /link linear`, `/link notion` or `/link 
 the mention in channels). Open the private, ten-minute link and approve your account. The browser confirms
 when connected; your next request uses your account. A new command replaces an unfinished
 link, and a controller restart expires unfinished links. Linked accounts survive restarts.
-`/link drive`, `/link docs`, `/link sheets`, `/link slides`, `/link calendar` and
+`/link drive`, `/link docs`, `/link sheets`, `/link slides`, `/link calendar`, `/link calendars`, `/link gmail` and
 `/link google workspace` all connect the same Google account for the enabled Workspace tools.
 
 In channels, answers are **private to the person who asked**, including tool results and failure
@@ -219,8 +220,8 @@ members access to your connection or results. Link only accounts that belong to 
 **How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
 service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
 the controller checks the call, swaps in the asker's own login, and forwards it to the service's
-official MCP server (the same pattern as a write turn's staging push, where the box pushes through
-the controller and never holds the token).
+official MCP server. Creating a separate calendar uses the same broker checks and requester token,
+with a small MCP adapter for Google's Calendar REST API; Google's Calendar MCP covers event tools.
 
 ```mermaid
 sequenceDiagram
@@ -274,7 +275,7 @@ they haven't linked, the bot tells them to link it first and does nothing else w
   `node deploy/ctl.mjs link notion <their Slack id>`.
 - **Google:** the Workspace MCP servers are in a
   [Developer Preview](https://developers.google.com/workspace/guides/configure-mcp-servers). Join it,
-  then in a Cloud project enable the Drive, Docs, Sheets, Slides and Calendar APIs and their MCP
+  then in a Cloud project enable the Drive, Docs, Sheets, Slides, Calendar and Gmail APIs and their MCP
   APIs, and set the OAuth consent screen to *Internal*. For Slack linking, create a **Web
   application** OAuth client with the exact authorized redirect URI
   `https://<controller-public-host>/link/google/callback`. Hand it to the controller once:
@@ -291,18 +292,29 @@ exchanges the authorization code on the controller; neither Slack nor a session 
 **What the bot may do** is `TOOLS` in `src/policy.mjs`: reads are listed, and every other call is
 refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as
 shipped, comments and issues in Linear (`save_issue` edits issues too) and comments and new pages in
-Notion. Nothing deletes, moves, shares or overwrites, and nothing changes Google files. A change is
+Notion, Workspace file creation and editing, calendar creation and event invitations, and Gmail
+drafts. File edits can replace existing content, and event invitations notify their attendees. A change is
 made as the person asking, on their own login, in their private session with the bot. In channels,
-only that person's messages enter the session. The ones on offer:
+only that person's messages enter the session. The enabled Google changes are:
 
 | Service | Change tools | Notes |
 |---|---|---|
-| Linear | `save_comment`, `save_issue`, `save_document`, `save_project`, `create_attachment` | `save_issue` creates *and* edits issues |
-| Notion | `notion-create-comment`, `notion-create-pages`, `notion-update-page`, `notion-move-pages`, `notion-duplicate-page`, `notion-create-database` | `notion-update-page` can overwrite a page |
-| Drive | `create_file`, `copy_file` | |
-| Docs · Sheets | `update_doc` · `update_values`, `update_formulas`, `update_spreadsheet`, `insert_dimension` | |
-| Slides | `update_presentation` | Google marks it destructive |
-| Calendar | `create_event`, `update_event`, `respond_to_event`, `delete_event` | `delete_event` is destructive |
+| Drive | `create_file`, `copy_file` | Create Docs, Sheets and Slides with their Google MIME type |
+| Docs · Sheets | `update_doc` · `update_values`, `update_formulas`, `update_spreadsheet`, `insert_dimension` | Edit files the requester can edit |
+| Slides | `update_presentation` | Edits may replace or remove presentation content |
+| Calendar | `create_event`, `update_event` | Invite the requested attendee addresses; use `notificationLevel: ALL` to notify them |
+| Calendars | `create_calendar` | Create a separate calendar owned by the requester; does not share it |
+| Gmail | `create_draft` | Prepare mail for the requester to review and send themselves |
+
+For example: “Create a Planning calendar, schedule a kickoff with alice@polygala.ai, and draft
+an email about it.” The calendar id from `calendars.create_calendar` becomes the event's
+`calendarId`; `gmail.create_draft` leaves the email in Drafts. For “everyone,” provide a verified
+group address or attendee list: the bot has no Workspace directory access to enumerate members.
+
+Google's `gmail.compose` scope also permits sending, but the controller exposes only draft
+creation and refuses send tools. Calendar creation uses `calendar.app.created`; event writes use
+`calendar.events`. The controller exposes no calendar deletion, calendar sharing or mail sending
+tools. After tools/scopes change, each member must run `/link google` again to approve access.
 
 Each request may make up to 10 changes in up to 60 tool calls. Under its answer, the bot lists the
 changes it made, as the controller recorded them. The controller log records every tool call: who

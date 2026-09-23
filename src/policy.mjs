@@ -68,18 +68,23 @@ const READS = {
   sheets: ['get_values', 'get_spreadsheet'],
   slides: ['read_presentation', 'read_slide_page', 'read_slide_page_thumbnail'],
   calendar: ['list_calendars', 'list_events', 'get_event', 'search_events', 'suggest_time'],
+  calendars: [],
+  gmail: [],
 }
 
-// The changes the bot may make: as its own account, seen by your whole team, for anyone
-// mayUseSlack() lets in and for the bot's admins on GitHub — and triggered by what's in a thread,
-// which anyone in that channel (or, on GitHub, anyone at all) can write.
-// New things and comments, all kept in each service's history: nothing here deletes, moves,
-// shares or overwrites what's there, sends invitations, or edits Google files. (`save_issue`
-// also edits an issue's fields.) The other candidates are under "Linear, Notion and Google
-// Workspace" in the README.
+// Changes use the requesting Slack member's account, only when they ask. Calendar events
+// may invite attendees; document updates may overwrite content. Gmail is draft-only even
+// though Google's gmail.compose OAuth scope also permits sending: the broker refuses send tools.
 const WRITES = {
   linear: ['save_comment', 'save_issue'],
   notion: ['notion-create-comment', 'notion-create-pages'],
+  drive: ['create_file', 'copy_file'],
+  docs: ['update_doc'],
+  sheets: ['update_values', 'update_formulas', 'update_spreadsheet', 'insert_dimension'],
+  slides: ['update_presentation'],
+  calendar: ['create_event', 'update_event'],
+  calendars: ['create_calendar'],
+  gmail: ['create_draft'],
 }
 
 for (const service of Object.keys(WRITES)) if (!READS[service]) throw new Error(`WRITES names no service "${service}" (one of: ${Object.keys(READS).join(', ')})`)
