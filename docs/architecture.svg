@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="940" height="640" viewBox="0 0 940 640" role="img" aria-labelledby="t">
-  <title id="t">GitHub mentions reach the controller box by polling or App push, and Slack messages over a Socket Mode connection the controller dials out. The controller holds every real credential, calls chatgpt.com and the team's Linear, Notion and Google Workspace with the bot's own logins, and runs one session box per issue, PR or Slack thread. Session boxes hold no credentials and reach the model, the tools and (on a write turn) one staging branch of the bot's fork only through the controller. GitHub threads and Slack threads never mix: each side keeps its context on a volume of its own, and a GitHub box never mounts Slack's.</title>
+  <title id="t">GitHub mentions reach the controller box by polling or App push, and Slack messages over a Socket Mode connection the controller dials out. The controller holds every real credential, calls chatgpt.com as the bot and Linear, Notion and Google Workspace as the Slack requester, and runs one session box per GitHub thread or Slack requester within a thread. Session boxes hold no credentials and reach the model, the tools and (on a write turn) one staging branch of the bot's fork only through the controller. GitHub threads and Slack threads never mix: each side keeps its context on a volume of its own, and a GitHub box never mounts Slack's.</title>
   <style>
     :root { --bg: #ffffff; --frame: #d1d9e0; --ink: #1f2328; --muted: #59636e; --rule: #d1d9e0; --rule-strong: #818b98; --bubble: #f6f8fa; --blue: #0969da; --blue-soft: #ddf4ff; --amber: #9a6700; --amber-soft: #fff8c5; --green: #1a7f37; }
     @media (prefers-color-scheme: dark) {
@@ -63,7 +63,7 @@
   <text x="316" y="116"><tspan class="key">poller</tspan><tspan class="muted"> · GitHub, every 60 s</tspan></text>
   <text x="316" y="140"><tspan class="key">webhook</tspan><tspan class="muted"> · App repos, ~1 s</tspan></text>
   <text x="316" y="164"><tspan class="key">socket</tspan><tspan class="muted"> · Slack events, ~1 s</tspan></text>
-  <text x="316" y="188"><tspan class="key">scheduler</tspan><tspan class="muted"> · 1 per thread, 3 at once</tspan></text>
+  <text x="316" y="188"><tspan class="key">scheduler</tspan><tspan class="muted"> · 1 per session, 3 at once</tspan></text>
   <text x="316" y="212"><tspan class="key">proxy</tspan><tspan class="muted"> · model, tools, one git push</tspan></text>
   <line class="hair" x1="316" y1="230" x2="616" y2="230"/>
   <text class="small" x="316" y="254">keeps: GitHub token · push App key</text>
@@ -83,7 +83,7 @@
 
   <!-- session boxes: GitHub's and Slack's, apart -->
   <rect class="untrusted" x="296" y="392" width="340" height="224" rx="12"/>
-  <text class="title" x="466" y="416" text-anchor="middle">session boxes · one per thread</text>
+  <text class="title" x="466" y="416" text-anchor="middle">isolated session boxes</text>
   <text class="small muted" x="466" y="434" text-anchor="middle">no credentials · Codex, every permission</text>
   <text class="small muted" x="306" y="456">GitHub · anyone's, public repos</text>
   <rect class="card" x="306" y="464" width="98" height="42" rx="7"/>
@@ -98,7 +98,7 @@
   <line class="divide" x1="306" y1="524" x2="626" y2="524"/>
   <rect class="label-bg" x="420" y="515" width="92" height="18"/>
   <text class="small wall" x="466" y="528" text-anchor="middle">never mixed</text>
-  <text class="small muted" x="306" y="548">Slack · members only</text>
+  <text class="small muted" x="306" y="548">Slack · per requester within each thread</text>
   <rect class="card" x="306" y="556" width="98" height="42" rx="7"/>
   <text x="355" y="574" text-anchor="middle">#backend</text>
   <text class="small ok" x="355" y="590" text-anchor="middle">running</text>
@@ -126,7 +126,7 @@
   <rect class="ext" x="748" y="538" width="176" height="82" rx="10"/>
   <text class="title" x="836" y="560" text-anchor="middle">Slack volume</text>
   <text class="small muted" x="836" y="578" text-anchor="middle">botlite-slack-context</text>
-  <text class="small" x="836" y="595" text-anchor="middle">sessions/team/chan/ts/</text>
+  <text class="small" x="836" y="595" text-anchor="middle">…/team/chan/ts/[user]/</text>
   <text class="small amber" x="836" y="612" text-anchor="middle">context.sealed</text>
 
   <!-- GitHub ⇄ controller -->

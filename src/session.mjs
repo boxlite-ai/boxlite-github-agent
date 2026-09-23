@@ -4,7 +4,8 @@
 // simply recreated and carries on. Between turns the box is stopped — that ends anything a turn
 // left running and stops the meter; the next exec starts it again.
 //
-// A GitHub thread (owner/repo#n) and a Slack thread (team/channel/ts) never share anything: their
+// A GitHub thread (owner/repo#n) and a Slack session (team/channel/ts, plus requester in channels)
+// never share anything: their
 // boxes are named apart, and each kind has its own volume and its own secret for context keys — so
 // a box running a public GitHub thread's code, at anyone's request, doesn't even mount where the
 // team's Slack conversations are kept (sideOf). Nor the other way round: BoxLite has no read-only
@@ -17,7 +18,7 @@ import { codexArgs, codexConfig, applyEvent, newRun, CODEX_VERSION } from './cod
 const RUNNER = readFileSync(new URL('../box/session.mjs', import.meta.url), 'utf8')
 const VOLUME_PATH = '/vol'
 const CTX = '/ctx'
-const SLACK_KEY = /^[A-Z0-9]+\/[A-Z0-9]+\/\d+\.\d+$/
+const SLACK_KEY = /^[A-Z0-9]+\/[A-Z0-9]+\/\d+\.\d+(?:\/[A-Z0-9]+)?$/
 const GITHUB_KEY = /^[\w.-]+\/[\w.-]+#\d+$/
 
 /** Why this config would let Slack and GitHub threads share a volume or context keys — or null. */
@@ -40,9 +41,11 @@ export function sideOf(key, cfg, { slack = false } = {}) {
   return side
 }
 
-/** A Slack thread: workspace / channel / parent message ts, e.g. T01ABC/C02DEF/1712345678.000100. */
+/** DMs keep their thread key; channel sessions add the requester to isolate files, context and queues. */
 export function slackThreadKey(req) {
-  const key = `${req.team}/${req.channel}/${req.threadTs}`
+  const thread = `${req.team}/${req.channel}/${req.threadTs}`
+  if (!/^[A-Z0-9]+\/[A-Z0-9]+\/\d+\.\d+$/.test(thread) || (!req.isDM && !/^[A-Z0-9]+$/.test(req.user ?? ''))) throw new Error(`not a Slack thread: ${thread}`)
+  const key = req.isDM ? thread : `${thread}/${req.user}`
   if (!SLACK_KEY.test(key)) throw new Error(`not a Slack thread: ${key}`) // it becomes a box name and a volume path
   return key
 }

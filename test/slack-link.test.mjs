@@ -46,7 +46,7 @@ test('a non-admin links only themselves through a private reply, without a Codex
   }
   await message('U1', '<@UBOT> /link linear')
   assert.deepEqual(bound, [['linear', 'U1']])
-  assert.deepEqual(calls.at(-1), { method: 'chat.postEphemeral', params: { channel: 'C1', user: 'U1', text: '<https://controller.example/private-link|Connect your Linear account>. This private link expires in 10 minutes. Then ask me in a DM.' } })
+  assert.deepEqual(calls.at(-1), { method: 'chat.postEphemeral', params: { channel: 'C1', user: 'U1', text: '<https://controller.example/private-link|Connect your Linear account>. This private link expires in 10 minutes. Only you can use this connection.' } })
   await message('U2', '/link linear', true)
   assert.deepEqual(bound, [['linear', 'U1'], ['linear', 'U2']])
   await message('U2', '<@UBOT> /link notion')

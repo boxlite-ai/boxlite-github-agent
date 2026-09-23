@@ -55,7 +55,8 @@ test('reply: markdown blocks in the request’s thread, the footer under the las
   await reply(sk, req, `${'a'.repeat(11_000)}\n\n${'b'.repeat(2_000)}`)
   assert.equal(sk.calls.length, 2)
   for (const c of sk.calls) {
-    assert.deepEqual([c.method, c.channel, c.thread_ts, c.unfurl_links], ['chat.postMessage', 'C1', '1.000001', false])
+    assert.deepEqual([c.method, c.channel, c.thread_ts, c.unfurl_links], ['chat.postEphemeral', 'C1', '1.000001', false])
+    assert.equal(c.user, 'U1')
     assert.equal(c.blocks[0].type, 'markdown')
     assert.ok(c.text.length <= 300) // notification text
   }
@@ -64,8 +65,16 @@ test('reply: markdown blocks in the request’s thread, the footer under the las
   assert.match(sk.calls[1].blocks[1].elements[0].text, /BoxLite.*mention me in this thread/)
   const dm = fakeSlack()
   await reply(dm, { ...req, isDM: true }, '')
+  assert.equal(dm.calls[0].method, 'chat.postMessage')
   assert.equal(dm.calls[0].blocks[0].text, '(no answer)')
   assert.match(dm.calls[0].blocks[1].elements[0].text, /reply in this thread/)
+  const top = fakeSlack()
+  await reply(top, { ...req, threadTs: req.ts }, 'Private top-level answer')
+  assert.equal(top.calls[0].method, 'chat.postEphemeral')
+  assert.equal(top.calls[0].thread_ts, undefined)
+  const failed = fakeSlack({ 'chat.postEphemeral': 'user_not_in_channel' })
+  await assert.rejects(reply(failed, req, 'private data'), /user_not_in_channel/)
+  assert.equal(failed.calls.some((c) => c.method === 'chat.postMessage'), false)
 })
 
 test('reply: an overlong answer is cut — closing a code block it was in — and says so', async () => {

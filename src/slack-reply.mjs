@@ -29,9 +29,10 @@ export async function reply(slack, req, markdown, { changes = [] } = {}) {
   }
   const parts = split(text)
   for (const [i, part] of parts.entries()) {
-    await slack.call('chat.postMessage', {
+    await slack.call(req.isDM ? 'chat.postMessage' : 'chat.postEphemeral', {
       channel: req.channel,
-      thread_ts: req.threadTs,
+      user: req.isDM ? undefined : req.user,
+      thread_ts: !req.isDM && req.threadTs === req.ts ? undefined : req.threadTs,
       text: part.slice(0, 300), // what notifications show
       blocks: [{ type: 'markdown', text: part }, ...(i === parts.length - 1 ? [footer(req, changes)] : [])],
       unfurl_links: false,

@@ -74,7 +74,7 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', google
       // A GET does not consume the link: Slack's link scanners may visit it before the person does.
       if (step === 'start' && req.method === 'GET') {
         res.setHeader('set-cookie', cookie)
-        return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(`<!doctype html><meta charset="utf-8"><title>Connect ${label}</title><h1>Connect your ${label} account</h1><p>BoxLite will use your account for your requests in Slack DMs.</p><form method="post"><button>Continue to ${label}</button></form>`)
+        return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(`<!doctype html><meta charset="utf-8"><title>Connect ${label}</title><h1>Connect your ${label} account</h1><p>BoxLite will use your account for your private replies in Slack.</p><form method="post"><button>Continue to ${label}</button></form>`)
       }
       if (!(req.headers.cookie ?? '').split(';').some((c) => c.trim() === `${cookieName}=${flow.browser}`)) return send(403, 'Open the private link from Slack in this browser first.')
       try {
@@ -113,7 +113,7 @@ export function accountLinks({ baseUrl, userLogins, linearScope = 'read', google
         await writeFile(temp, JSON.stringify(record), { mode: 0o600 })
         await rename(temp, flow.file)
         pending.delete(state)
-        return send(200, `${label} connected. Return to Slack and ask BoxLite in a direct message.`)
+        return send(200, `${label} connected. Return to Slack and mention BoxLite in a channel or send a direct message.`)
       } catch {
         pending.delete(state)
         return send(502, `Could not connect ${label}. ${retry}`)

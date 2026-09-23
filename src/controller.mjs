@@ -166,7 +166,7 @@ const webhook = webhookHandler({
 const git = gitPushHandler({ secret: jobSecret, jobs, log })
 const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn asking for its PR's push
 // The team's tools. Each person uses their OWN login, linked from Slack or ctl and kept per user
-// (userlogins.mjs), and only in a Slack DM — so the bot only ever reads what the asker can, and
+// (userlogins.mjs), in their private Slack session — so the bot only reads what the asker can, and
 // there is no shared bot login for anyone to borrow. Each distinct login and how it's stored per
 // user: OAuth, with legacy Linear API keys still supported.
 const loginKinds = Object.fromEntries([...new Set(Object.values(SERVICES).map((s) => s.login))].map((n) => [n, n === 'linear' ? 'key-or-oauth' : 'oauth']))
@@ -358,7 +358,7 @@ async function handle(req) {
     const { write, plan: planned } = await writeTurn(req, pr, key)
     plan = planned
     // No team tools on GitHub: a public thread, run at anyone's request, and there is no shared bot
-    // login to lend it — the tools are each person's own, bound and used only in a Slack DM.
+    // login to lend it — the tools are each person's own, bound and used in private Slack sessions.
     const job = { who: `@${req.author}`, writes: [], tools: [] } // what its token opens
     const fresh = async () => newSessionPrompt({ login: cfg.login, req, pr, comments: await recentComments(req), write })
     const prompt = known?.sessionId

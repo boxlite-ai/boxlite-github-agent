@@ -18,11 +18,12 @@ asking, so only what they can see — and comment and file things in Linear and 
 
 ## How it works
 
-![GitHub mentions reach the controller box by polling or App push, and Slack messages over a Socket Mode connection the controller dials out. The controller holds every real credential, calls chatgpt.com and the team's Linear, Notion and Google Workspace with the bot's own logins, and runs one session box per issue, PR or Slack thread. Session boxes hold no credentials and reach the model, the tools and (on a write turn) one staging branch of the bot's fork only through the controller. GitHub threads and Slack threads never mix: each side keeps its context on a volume of its own, and a GitHub box never mounts Slack's.](docs/architecture.svg)
+![GitHub mentions reach the controller box by polling or App push, and Slack messages over a Socket Mode connection the controller dials out. The controller holds every real credential, calls chatgpt.com as the bot and Linear, Notion and Google Workspace as the Slack requester, and runs one session box per GitHub thread or Slack requester within a thread. Session boxes hold no credentials and reach the model, the tools and (on a write turn) one staging branch of the bot's fork only through the controller. GitHub threads and Slack threads never mix: each side keeps its context on a volume of its own, and a GitHub box never mounts Slack's.](docs/architecture.svg)
 
-- **One box and one Codex session per issue, PR or Slack thread.** Follow-ups resume the session.
-  A PR's checkout follows its latest head; a Slack follow-up also sees what others said in the
-  thread since the bot's last reply.
+- **One box and session per GitHub thread or Slack requester within a thread.** Your follow-ups
+  resume your session; another channel member gets their own box, files and context.
+  A PR's checkout follows its latest head; a Slack channel follow-up sees only the requester's
+  messages since their last turn.
 - **Codex may do anything in its box:** no sandbox, no approval prompts, no hook reviews, `sudo`,
   network, live web search. The microVM is the boundary, and nothing worth stealing is ever inside it.
 - **Every box runs [agent-tooling](https://github.com/boxlite-ai/agent-tooling),** BoxLite's shared
@@ -55,9 +56,10 @@ and a long answer is split into a few messages, never in the middle of a code bl
 
 Live state (the checkout or working directory, and `CODEX_HOME`) stays on the box's own disk, since
 the S3-backed volume has no rename or append. After every turn `CODEX_HOME` is sealed with
-AES-256-GCM under a key derived for that thread, and written to the thread's directory on its
-side's volume: `sessions/<owner>/<repo>/<n>/` or `sessions/<team>/<channel>/<thread ts>/`. Every box
-mounts its side's whole volume, but only that thread's box gets the key. A thread's box is deleted
+AES-256-GCM under a key derived for that session, and written to its directory on its
+side's volume: `sessions/<owner>/<repo>/<n>/` for GitHub, or
+`sessions/<team>/<channel>/<thread ts>/<requester>/` for Slack channels (DMs omit `<requester>/`). Every box
+mounts its side's whole volume, but only that session's box gets the key. A session's box is deleted
 after 15 quiet minutes (`BOX_TTL_MIN`), and the next mention restores into a new one. The
 conversation carries over; files from earlier turns don't, and Codex is told so.
 
@@ -125,10 +127,17 @@ in Slack every member may ask for PRs.
 
 Every Slack member can send `@boxliteai /link linear`, `/link notion` or `/link google` (include
 the mention in channels). Open the private, ten-minute link and approve your account. The browser confirms
-when connected; your next DM request uses your account. A new command replaces an unfinished
+when connected; your next request uses your account. A new command replaces an unfinished
 link, and a controller restart expires unfinished links. Linked accounts survive restarts.
 `/link drive`, `/link docs`, `/link sheets`, `/link slides`, `/link calendar` and
 `/link google workspace` all connect the same Google account for the enabled Workspace tools.
+
+In channels, answers are **private to the person who asked**, including tool results and failure
+notices. Alice and Bob can ask in the same thread: each uses their own linked accounts and context.
+One person's follow-ups run in order; different people can run concurrently within `MAX_CONCURRENT`.
+Only that person's earlier messages are imported into their channel session. Old shared channel
+sessions are not resumed. Private channel replies disappear after a Slack reload; use a DM for
+persistent replies. The bot never falls back to a public answer if private delivery fails.
 
 `/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
 pinned Codex, since a bad one would fail every turn.
@@ -203,9 +212,9 @@ only**:
 own login — so the bot reads only what that person can already see, and no one's private data reaches
 anyone else through it. Someone who hasn't linked a service simply can't use it, and the bot tells
 them how. There is **no shared bot login** for anyone to borrow, and **no team tools on GitHub** (a
-public thread, run at anyone's request). It's **Slack, and only in a direct message**: a DM is one
-requester, but a channel thread has many and its session, context and files are the thread's, so
-one person's tools must never carry to another there. Link one only where the account is yours.
+public thread, run at anyone's request). In Slack, DMs use that person's account; channel requests
+use separate sessions per requester and private replies. Linking does not give other channel
+members access to your connection or results. Link only accounts that belong to you.
 
 **How a tool call flows, end to end.** The box holds no tool credential. Its Codex reaches each
 service as an MCP server on the controller (`/mcp/<service>`), carrying only the turn's job token;
@@ -215,7 +224,7 @@ the controller and never holds the token).
 
 ```mermaid
 sequenceDiagram
-    participant A as Asker (Slack DM)
+    participant A as Asker (private Slack reply)
     participant B as Session box (Codex)
     participant C as Controller (broker)
     participant S as Official MCP server
@@ -283,8 +292,8 @@ exchanges the authorization code on the controller; neither Slack nor a session 
 refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as
 shipped, comments and issues in Linear (`save_issue` edits issues too) and comments and new pages in
 Notion. Nothing deletes, moves, shares or overwrites, and nothing changes Google files. A change is
-made as the person asking, on their own login, in their DM with the bot, and can be prompted by
-anything written in the thread. The ones on offer:
+made as the person asking, on their own login, in their private session with the bot. In channels,
+only that person's messages enter the session. The ones on offer:
 
 | Service | Change tools | Notes |
 |---|---|---|
@@ -343,7 +352,7 @@ else would go stale.
 | `src/slack.mjs` · `slack-reply.mjs` | controller | Slack Web API as the bot: 👀, replies, file downloads |
 | `src/policy.mjs` | controller | your policy: who may use the bot in Slack, which tools it may use |
 | `src/tools.mjs` · `oauth.mjs` | controller | the tool broker at `/mcp/<service>`; the bot's logins, kept fresh |
-| `src/jobs.mjs` · `state.mjs` | controller | one turn per thread, a few at once; seen requests, sessions, quotas |
+| `src/jobs.mjs` · `state.mjs` | controller | one turn per session, a few at once; seen requests, sessions, quotas |
 | `src/session.mjs` | controller | one turn: its side, start or create the box, exec the runner attached, stop it |
 | `src/proxy.mjs` · `chatgpt.mjs` | controller | the public port: model endpoints only, job token → real login |
 | `src/codex.mjs` | controller | `codex exec` / `resume` arguments, prompts, event parsing |

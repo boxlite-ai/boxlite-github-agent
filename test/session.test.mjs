@@ -197,8 +197,10 @@ test('runTurn: a box deleted as it was reused (auto_delete) is made anew, once',
   assert.equal(bl.calls.find((c) => c[0] === 'stopBox')[1], 'box-1') // the new box is the one stopped
 })
 
-test('slackThreadKey: workspace/channel/thread — anything else never becomes a box name or a volume path', () => {
-  assert.equal(slackThreadKey({ team: 'T01', channel: 'C01', threadTs: '1712345678.000100' }), 'T01/C01/1712345678.000100')
+test('slackThreadKey: workspace/channel/thread/requester — anything else never becomes a box name or a volume path', () => {
+  assert.equal(slackThreadKey({ team: 'T01', channel: 'C01', threadTs: '1712345678.000100', user: 'U1' }), 'T01/C01/1712345678.000100/U1')
+  assert.equal(slackThreadKey({ team: 'T01', channel: 'D01', threadTs: '1.2', user: 'U1', isDM: true }), 'T01/D01/1.2')
+  for (const user of [undefined, '../U2', 'U1/U2']) assert.throws(() => slackThreadKey({ team: 'T1', channel: 'C1', threadTs: '1.2', user }), /not a Slack thread/)
   for (const bad of [{ team: '../x', channel: 'C1', threadTs: '1.2' }, { team: 'T1', channel: 'C1/..', threadTs: '1.2' }, { team: 'T1', channel: 'C1', threadTs: '1.2/..' }]) {
     assert.throws(() => slackThreadKey(bad), /not a Slack thread/)
   }
