@@ -23,7 +23,7 @@
 //           BOXLITE_SECRET_SLACK_BOT / _SLACK_APP placeholders, or <state dir>/slack-bot-token +
 //           slack-app-token (ctl slack-tokens) — no restart needed
 //   Tools   optional and per person: each Slack user binds their OWN Linear / Notion / Google
-//           login from Slack (/link linear) or ctl, kept under <state dir>/user-logins/
+//           login from Slack (/link linear, /link notion) or ctl, kept under <state dir>/user-logins/
 //           (src/userlogins.mjs). No shared bot login; none on GitHub.
 // Optional: BOT_LOGIN (botlite), BOXLITE_URL (https://api.boxlite.ai), PORT (8788), PUBLIC_URL
 //   (else looked up for this box, BOXLITE_BOX_ID), VOLUME (botlite-context), SLACK_VOLUME
@@ -56,7 +56,7 @@ import { webhookHandler, requestsFromWebhook } from './webhook.mjs'
 import { react, reply } from './reply.mjs'
 import { toolBroker, SERVICES } from './tools.mjs'
 import { userLogins } from './userlogins.mjs'
-import { linearLink } from './linear-link.mjs'
+import { accountLinks } from './account-links.mjs'
 import { TOOLS, SLACK_PR_REPOS } from './policy.mjs'
 import { tally } from './slack-reply.mjs'
 import { slackChannel } from './slack-channel.mjs'
@@ -170,7 +170,7 @@ const prGrant = prGrantHandler({ secret: jobSecret, jobs, log }) // a Slack turn
 // user: OAuth, with legacy Linear API keys still supported.
 const loginKinds = Object.fromEntries([...new Set(Object.values(SERVICES).map((s) => s.login))].map((n) => [n, n === 'linear' ? 'key-or-oauth' : 'oauth']))
 const userTools = userLogins({ dir: path.join(stateDir, 'user-logins'), kinds: loginKinds })
-const linear = linearLink({ baseUrl: () => proxyUrl, userLogins: userTools, scope: TOOLS.linear.write.length ? 'read write' : 'read' })
+const links = accountLinks({ baseUrl: () => proxyUrl, userLogins: userTools, linearScope: TOOLS.linear.write.length ? 'read write' : 'read' })
 const tools = toolBroker({ secret: jobSecret, jobs, policy: TOOLS, log }) // whose login a turn uses is set on its job
 
 /** The model and reasoning effort turns run on right now (access.mjs: /model, else the deploy's). */
@@ -193,7 +193,7 @@ const health = () => {
   const deaf = Date.now() - lastSlack
   return deaf < 10 * 60_000 ? { ok: true } : { ok: false, why: `not connected to Slack for ${Math.floor(deaf / 60_000)} minutes` }
 }
-const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, pr: prGrant, tools, linking: linear.handle, health })
+const proxy = createProxy({ login: chatgpt, secret: jobSecret, jobs, model: () => running().model, log, webhook, git, pr: prGrant, tools, linking: links.handle, health })
 await new Promise((resolve) => proxy.listen(cfg.port, '0.0.0.0', resolve))
 const proxyUrl = (env.PUBLIC_URL || (await bl.previewUrl(env.BOXLITE_BOX_ID, cfg.port)).url).replace(/\/+$/, '')
 
@@ -574,7 +574,7 @@ async function connectSlack() {
     await rename(handed, path.join(stateDir, 'slack-state.imported.json'))
     log(`slack: took in the Slack agent's memory: ${Object.keys(state.slack.threads).length} threads, ${state.slack.deferred.length} requests kept for us`)
   }
-  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, userLogins: userTools, linear, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
+  const channel = await slackChannel({ tokens, cfg, slackState: state.slack, persist, schedule, track, draining: () => draining, jobs, bl, proxyUrl, userLogins: userTools, links, policy: TOOLS, turnCfg, status, log, prs: slackPrs, commands: slackCommands })
   if (draining) return true // shutting down meanwhile: the next controller connects
   slackBot = channel
   lastSlack = Date.now() // the trial and /healthz count Slack from its start

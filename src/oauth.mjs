@@ -4,7 +4,7 @@
 // Legacy Linear API keys need no refresh. Browser connections are OAuth logins kept alive
 // here the way chatgpt.mjs keeps the ChatGPT one: access tokens last hours, and refresh tokens
 // rotate (Notion's on every refresh), so the controller is their one holder and saves each new one
-// before using it. A login arrives from browser consent (linear-link.mjs) or a terminal login
+// before using it. A login arrives from browser consent (account-links.mjs) or a terminal login
 // (deploy/login.mjs), as a file: { token_endpoint, client_id, client_secret?, resource?,
 // access_token, refresh_token, expires_at, linked_at, max_age_days?, account? }.
 import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises'

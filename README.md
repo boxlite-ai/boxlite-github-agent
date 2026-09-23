@@ -123,8 +123,8 @@ same state: `@boxliteai /model …`, `/deploy` (it reports back in that Slack th
 `/resume`, so one `/pause` stops PR writing on both. `/add`, `/remove` and `/list` stay on GitHub:
 in Slack every member may ask for PRs.
 
-Every Slack member can send `@boxliteai /link linear` (or `/link linear` in a DM). Open the
-private, ten-minute link, continue to Linear, and approve your account. The browser confirms
+Every Slack member can send `@boxliteai /link linear` or `@boxliteai /link notion` (omit the
+mention in a DM). Open the private, ten-minute link and approve your account. The browser confirms
 when connected; your next DM request uses your account. A new command replaces an unfinished
 link, and a controller restart expires unfinished links. Linked accounts survive restarts.
 
@@ -245,7 +245,7 @@ answered Dorian, changed: Linear save_issue · Notion notion-create-pages
 | | Linear | Notion | Google Workspace |
 |---|---|---|---|
 | What it sees | what that member sees | the pages shared with it | files and calendars shared with it |
-| A Slack person links their own | `@boxliteai /link linear` in Slack | `node deploy/ctl.mjs link notion <their Slack id>` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
+| A Slack person links their own | `@boxliteai /link linear` | `@boxliteai /link notion` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
 | Lasts | until revoked; OAuth tokens refresh automatically | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
 
 **Linking a Slack person** binds their own token, keyed to their Slack id — the `U…` in the log's
@@ -258,7 +258,9 @@ they haven't linked, the bot tells them to link it first and does nothing else w
   and browser. Tokens stay on the controller; its tool allowlist still limits changes. No OAuth app
   setup is needed. Existing personal API keys remain supported through
   `LINEAR_API_KEY=… node deploy/ctl.mjs link linear <their Slack id>`.
-- **Notion:** the login opens a browser. The person approves it as themselves; nothing to set up first.
+- **Notion:** the private Slack link uses Notion MCP's OAuth registration and PKCE. The person
+  approves it as themselves; nothing to set up first. Terminal linking remains available through
+  `node deploy/ctl.mjs link notion <their Slack id>`.
 - **Google:** the Workspace MCP servers are in a
   [Developer Preview](https://developers.google.com/workspace/guides/configure-mcp-servers). Join it,
   then in a Cloud project enable the Drive, Docs, Sheets, Slides and Calendar APIs and their MCP
@@ -266,7 +268,7 @@ they haven't linked, the bot tells them to link it first and does nothing else w
   app*. The login asks only for the scopes your tool policy needs; after you allow a new kind of
   change, run it again.
 
-Terminal logins run on your machine and hand tokens to the controller. Slack's Linear login
+Terminal logins run on your machine and hand tokens to the controller. Slack's browser linking
 exchanges the authorization code on the controller; neither Slack nor a session box gets tokens.
 
 **What the bot may do** is `TOOLS` in `src/policy.mjs`: reads are listed, and every other call is

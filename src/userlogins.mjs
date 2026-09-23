@@ -1,5 +1,5 @@
 // Per-user tool logins: each Slack person binds their OWN Linear / Notion / Google token
-// (Slack's /link linear or `ctl link <service> <user>`), and a turn uses the REQUESTER's token:
+// (Slack's /link or `ctl link <service> <user>`), and a turn uses the REQUESTER's token:
 // reads what that person can already see, and no one's private data reaches anyone else through it.
 // There is no shared super-set login on the Slack side: a person who hasn't linked simply has no
 // tools, and the bot tells them how (codex.mjs).

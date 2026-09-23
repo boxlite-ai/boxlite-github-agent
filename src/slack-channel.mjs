@@ -31,7 +31,7 @@ import { slackSessionPrompt, slackFollowUpPrompt } from './codex.mjs'
  * — the controller's GitHub side of a PR. `commands.run(cmd, { isAdmin, who, by, reply, help, post })`
  * runs a command on the controller's state and posts its answer (then restarts, for a /deploy).
  */
-export async function slackChannel({ tokens, cfg, slackState, persist, schedule, track, draining, jobs, bl, proxyUrl, userLogins, linear, policy, turnCfg, status, log, prs, commands }) {
+export async function slackChannel({ tokens, cfg, slackState, persist, schedule, track, draining, jobs, bl, proxyUrl, userLogins, links, policy, turnCfg, status, log, prs, commands }) {
   const sk = slack(tokens.bot)
   // Who we are is whoever the bot token belongs to: its bot user is the one people mention.
   const me = await sk.call('auth.test')
@@ -199,7 +199,7 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
       `• attach files — logs, screenshots, code — and I get them too (up to ${size(cfg.maxFilesBytes)} a message)`,
       now.ok ? `• ask me to open a PR with a change: a draft PR from my own GitHub account, into ${prTargets(now.repos)}` : `• PRs: not now — ${now.why}`,
       `• \`@${bot.name} help\` — this message`,
-      `• \`@${bot.name} /link linear\` — connect your Linear account, then use it in a DM with me`,
+      `• \`@${bot.name} /link linear\` or \`/link notion\` — connect your account, then use it in a DM with me`,
       ...(isSlackAdmin(user) ? ['', `As an admin of this workspace, you can also run me: \`@${bot.name} /model [model] [effort]\` · \`/deploy\` (put what's merged on main live) · \`/pause\` · \`/resume\` (PR writing, everywhere).`] : []),
       ...(cfg.slackDailyLimit ? ['', `You have ${Math.max(0, cfg.slackDailyLimit - used)} of ${cfg.slackDailyLimit} requests left today (resets at 00:00 UTC).`] : []),
     ].join('\n')
@@ -224,9 +224,13 @@ export async function slackChannel({ tokens, cfg, slackState, persist, schedule,
     }
     const service = linkCommand(req, bot)
     if (service !== null) {
-      const text = service === 'linear'
-        ? `<${linear.begin(req.user)}|Connect your Linear account>. This private link expires in 10 minutes. Then ask me in a DM.`
-        : `Use \`@${bot.name} /link linear\` to connect your own Linear account.`
+      let text
+      try {
+        const { url, label } = links.begin(service, req.user)
+        text = `<${url}|Connect your ${label} account>. This private link expires in 10 minutes. Then ask me in a DM.`
+      } catch (e) {
+        text = e.message
+      }
       return whisper(sk, req, text)
     }
     // Commands (`@bot /model …`) are the controller's, as on GitHub: no box, no quota, never Codex.
