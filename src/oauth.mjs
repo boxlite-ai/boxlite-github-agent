@@ -1,11 +1,11 @@
 // Logins to Linear, Notion and Google Workspace, held by the controller only. Each person binds
-// their own with `ctl link` (userlogins.mjs keeps one per user); these are the building blocks.
+// their own from Slack or `ctl link` (userlogins.mjs keeps one per user); these are the building blocks.
 //
-// Linear's is an API key — nothing to refresh. Notion's and Google's are OAuth logins kept alive
+// Legacy Linear API keys need no refresh. Browser connections are OAuth logins kept alive
 // here the way chatgpt.mjs keeps the ChatGPT one: access tokens last hours, and refresh tokens
 // rotate (Notion's on every refresh), so the controller is their one holder and saves each new one
-// before using it. A login arrives from `ctl link notion|google` (deploy/login.mjs), done on the
-// person's machine, as a file: { token_endpoint, client_id, client_secret?, resource?,
+// before using it. A login arrives from browser consent (linear-link.mjs) or a terminal login
+// (deploy/login.mjs), as a file: { token_endpoint, client_id, client_secret?, resource?,
 // access_token, refresh_token, expires_at, linked_at, max_age_days?, account? }.
 import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises'
 import path from 'node:path'
@@ -55,8 +55,8 @@ export function oauthLogin({ name, file, fetchImpl = fetch, now = () => Date.now
       const form = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: from.refresh_token, client_id: from.client_id })
       if (from.client_secret) form.set('client_secret', from.client_secret)
       if (from.resource) form.set('resource', from.resource)
-      const res = await fetchImpl(from.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
-      if (!res.ok) throw new Error(`${name} token refresh failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`)
+      const res = await fetchImpl(from.token_endpoint, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
+      if (!res.ok) throw new Error(`${name} token refresh failed: HTTP ${res.status}`)
       const t = await res.json()
       if (tokens !== from) return // linked again meanwhile: the new login stands, this one is done
       if (!(await exists(live)) && !(await exists(file))) return // unlinked while refreshing: don't resurrect it

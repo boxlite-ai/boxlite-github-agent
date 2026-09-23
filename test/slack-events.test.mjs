@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { requestFromEvent, isHelp, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
+import { requestFromEvent, isHelp, linkCommand, displayName, threadLabel, mentionedIds, plainText, threadLine, tsBefore, permalink, attachmentPlan } from '../src/slack-events.mjs'
 
 const bot = { userId: 'UBOT', botId: 'BBOT', name: 'botlite' }
 const payload = (event, over = {}) => ({ type: 'event_callback', team_id: 'T1', event_id: 'Ev1', event, ...over })
 const mention = (over = {}) => ({ type: 'app_mention', user: 'U1', text: '<@UBOT> why does CI fail?', ts: '1712345678.000100', channel: 'C1', event_ts: '1712345678.000100', ...over })
+
+test('/link linear is a member command in channels and DMs; other users cannot be named as targets', () => {
+  for (const text of ['<@UBOT> /link linear', '<@UBOT|BoxLite> /LINK LINEAR']) assert.equal(linkCommand({ text }, bot), 'linear')
+  assert.equal(linkCommand({ text: '/link linear', isDM: true }, bot), 'linear')
+  for (const text of ['/link linear', '<@OTHER> /link linear', '<@UBOT> explain /link linear', '<@UBOT> /linking']) assert.equal(linkCommand({ text }, bot), null)
+  assert.equal(linkCommand({ text: '<@UBOT> /link linear U2' }, bot), 'linear u2') // rejected by the command handler
+})
 
 test('requestFromEvent: a mention in a channel starts a thread; one inside a thread continues it', () => {
   const top = requestFromEvent(payload(mention()), bot)

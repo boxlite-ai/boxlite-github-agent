@@ -33,7 +33,8 @@ asking, so only what they can see — and comment and file things in Linear and 
 - **GitHub and Slack never mix.** See [below](#github-and-slack-never-mix).
 - **PRs only for people who may ask.** Codex commits in its box; the controller checks the change
   and opens the PR. Everyone else gets the change as a diff in the reply.
-- **Slack needs no public URL.** The controller dials out to Slack (Socket Mode).
+- **Slack events use Socket Mode.** The controller dials out to Slack; browser account linking
+  uses the controller's existing public HTTPS URL.
 - **The team's tools go through the controller too.** Linear, Notion and Google Workspace reach
   Codex as MCP servers on the controller, behind the same job token. The controller checks every
   call against the tools you allow and swaps in the right login — in Slack the asker's own. See
@@ -121,6 +122,11 @@ These are GitHub comments. In Slack, the workspace's owners and admins run the s
 same state: `@boxliteai /model …`, `/deploy` (it reports back in that Slack thread), `/pause` and
 `/resume`, so one `/pause` stops PR writing on both. `/add`, `/remove` and `/list` stay on GitHub:
 in Slack every member may ask for PRs.
+
+Every Slack member can send `@boxliteai /link linear` (or `/link linear` in a DM). Open the
+private, ten-minute link, continue to Linear, and approve your account. The browser confirms
+when connected; your next DM request uses your account. A new command replaces an unfinished
+link, and a controller restart expires unfinished links. Linked accounts survive restarts.
 
 `/model` takes a model only if ChatGPT's Codex backend offers it (and that effort) to the bot's
 pinned Codex, since a bad one would fail every turn.
@@ -239,8 +245,8 @@ answered Dorian, changed: Linear save_issue · Notion notion-create-pages
 | | Linear | Notion | Google Workspace |
 |---|---|---|---|
 | What it sees | what that member sees | the pages shared with it | files and calendars shared with it |
-| A Slack person links their own | `LINEAR_API_KEY=lin_api_… node deploy/ctl.mjs link linear <their Slack id>` | `node deploy/ctl.mjs link notion <their Slack id>` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
-| Lasts | until you revoke the key | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
+| A Slack person links their own | `@boxliteai /link linear` in Slack | `node deploy/ctl.mjs link notion <their Slack id>` | `GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=… node deploy/ctl.mjs link google <their Slack id>` |
+| Lasts | until revoked; OAuth tokens refresh automatically | 180 days, then link again (`ctl status` shows the date) | until revoked, with an *Internal* consent screen |
 
 **Linking a Slack person** binds their own token, keyed to their Slack id — the `U…` in the log's
 `request from … (U…)`. The person completes any browser consent themselves, so it's their access
@@ -248,8 +254,10 @@ being bound, and the operator never sees a Notion/Google token. `node deploy/ctl
 who's bound; `node deploy/ctl.mjs unlink <service> <id>` removes one. When someone asks for a tool
 they haven't linked, the bot tells them to link it first and does nothing else with it.
 
-- **Linear:** the person creates the API key on their own member, restricted to the permissions you
-  allow (Read plus, for changes, Create issues / Create comments — not full Write).
+- **Linear:** browser linking uses Linear MCP's OAuth registration and PKCE, bound to the requester
+  and browser. Tokens stay on the controller; its tool allowlist still limits changes. No OAuth app
+  setup is needed. Existing personal API keys remain supported through
+  `LINEAR_API_KEY=… node deploy/ctl.mjs link linear <their Slack id>`.
 - **Notion:** the login opens a browser. The person approves it as themselves; nothing to set up first.
 - **Google:** the Workspace MCP servers are in a
   [Developer Preview](https://developers.google.com/workspace/guides/configure-mcp-servers). Join it,
@@ -258,7 +266,8 @@ they haven't linked, the bot tells them to link it first and does nothing else w
   app*. The login asks only for the scopes your tool policy needs; after you allow a new kind of
   change, run it again.
 
-The logins run on your machine and hand the tokens to the controller. Your machine keeps nothing.
+Terminal logins run on your machine and hand tokens to the controller. Slack's Linear login
+exchanges the authorization code on the controller; neither Slack nor a session box gets tokens.
 
 **What the bot may do** is `TOOLS` in `src/policy.mjs`: reads are listed, and every other call is
 refused before it reaches the service, whatever Codex asks. Changes are the ones in `WRITES`: as

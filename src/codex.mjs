@@ -128,7 +128,9 @@ const toolsLine = (services) => {
 const LABELS = { linear: 'Linear', notion: 'Notion', google: 'Google Workspace' }
 function linkNote(linkable = []) {
   if (!linkable.length) return ''
-  return `\nThe person hasn't linked their ${and(linkable.map((n) => LABELS[n] ?? n))} yet, so you can't read it for them. If they ask you to, tell them to link their own account first — an admin runs \`node deploy/ctl.mjs link <${linkable.join('|')}> <their Slack id>\`, and then you'll use their own access, never anyone else's.\n`
+  const manual = linkable.filter((n) => n !== 'linear')
+  const instructions = [linkable.includes('linear') ? 'For Linear, tell them to send `/link linear` in this DM and open the private authorization link.' : '', manual.length ? `For ${and(manual.map((n) => LABELS[n] ?? n))}, an admin runs \`node deploy/ctl.mjs link <${manual.join('|')}> <their Slack id>\`.` : ''].filter(Boolean).join(' ')
+  return `\nThe person hasn't linked their ${and(linkable.map((n) => LABELS[n] ?? n))} yet, so you can't read it for them. ${instructions} Then you'll use their own access, never anyone else's.\n`
 }
 
 /** In a channel the tools aren't available — they use one person's own account, so they're DM-only. */

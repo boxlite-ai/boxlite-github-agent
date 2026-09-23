@@ -1,11 +1,11 @@
 // Per-user tool logins: each Slack person binds their OWN Linear / Notion / Google token
-// (`ctl link <service> <user>`), and a turn uses the REQUESTER's token — so the bot only ever
+// (Slack's /link linear or `ctl link <service> <user>`), and a turn uses the REQUESTER's token:
 // reads what that person can already see, and no one's private data reaches anyone else through it.
 // There is no shared super-set login on the Slack side: a person who hasn't linked simply has no
 // tools, and the bot tells them how (codex.mjs).
 //
-// A user's login lives under <stateDir>/user-logins/<login>/<user> — a raw key for Linear, the
-// OAuth JSON (plus its refreshed `.live.json`) for the rest, exactly what oauth.mjs's keyLogin and
+// A user's login lives under <stateDir>/user-logins/<login>/<user> — OAuth JSON (plus its refreshed
+// `.live.json`), or a legacy raw Linear key, exactly what oauth.mjs's keyLogin and
 // oauthLogin read. Like the shared logins, the controller is their only holder; a box reaches them
 // only through the tool broker with its per-turn job token, never the token itself.
 import path from 'node:path'
@@ -17,7 +17,7 @@ const USER = /^[A-Za-z0-9_-]{1,64}$/
 
 /**
  * @param {string} dir  <stateDir>/user-logins
- * @param {Record<string,'key'|'oauth'>} kinds  login name → how it's stored (linear is a key, the rest OAuth)
+ * @param {Record<string,'key'|'oauth'|'key-or-oauth'>} kinds  login name → how it's stored
  */
 export function userLogins({ dir, kinds, fetchImpl = fetch }) {
   const cache = new Map()
@@ -28,9 +28,20 @@ export function userLogins({ dir, kinds, fetchImpl = fetch }) {
   }
   const make = (login, user) => {
     const file = fileFor(login, user)
-    return kinds[login] === 'key'
-      ? keyLogin(async () => (await readFile(file, 'utf8').catch(() => '')).trim() || null)
-      : oauthLogin({ name: login[0].toUpperCase() + login.slice(1), file, fetchImpl })
+    const key = keyLogin(async () => (await readFile(file, 'utf8').catch(() => '')).trim() || null)
+    const oauth = oauthLogin({ name: login[0].toUpperCase() + login.slice(1), file, fetchImpl })
+    if (kinds[login] !== 'key-or-oauth') return kinds[login] === 'key' ? key : oauth
+    let active = key
+    return {
+      async load() {
+        await key.load()
+        active = (await key.token())?.startsWith('lin_api_') ? key : oauth
+        return active === key ? key.ready() : oauth.load()
+      },
+      ready: () => active.ready(), token: () => active.token(), describe: () => active.describe(),
+      get refresh() { return active.refresh },
+      stale: () => active.stale?.() ?? false,
+    }
   }
   const of = (login, user) => {
     const k = `${login}\u0000${user}`

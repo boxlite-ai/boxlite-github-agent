@@ -31,6 +31,7 @@ test('oauthLogin: off until linked; a token near expiry is refreshed first — o
   let now = T0
   const calls = []
   const fetchImpl = async (url, init) => {
+    assert.equal(init.redirect, 'error') // refresh credentials must never follow redirects
     calls.push({ url, form: Object.fromEntries(new URLSearchParams(init.body)) })
     await new Promise((r) => setTimeout(r, 5))
     return Response.json({ access_token: 'at-2', refresh_token: 'rt-2', expires_in: 28_800 })
@@ -105,7 +106,7 @@ test('oauthLogin: a failed refresh throws and keeps the login; a new login from 
   const file = fileWith(linked())
   const l = oauthLogin({ name: 'Notion', file, now: () => T0 + 7_200_000, fetchImpl: async () => new Response('{"error":"invalid_grant"}', { status: 400 }) })
   await l.load()
-  await assert.rejects(l.token(), /Notion token refresh failed: 400 .*invalid_grant/)
+  await assert.rejects(l.token(), { message: 'Notion token refresh failed: HTTP 400' })
   writeFileSync(file, '{"access_tok') // ctl mid-write
   assert.equal(await l.load(), true)
   writeFileSync(file, JSON.stringify(linked({ refresh_token: 'rt-new', linked_at: '2026-10-01T00:00:00.000Z', expires_at: T0 + 10 * 3_600_000 })))
