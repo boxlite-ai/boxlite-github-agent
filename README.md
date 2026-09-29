@@ -504,6 +504,16 @@ npm test                 # offline: no network, BoxLite, Slack or model
 BOTLITE_E2E=1 npm test   # + a real Codex turn and resume through the proxy (needs codex 0.155.1)
 ```
 
+### Updating agent tooling
+
+Run `./.agent-tooling/install.sh` in each worktree after a tooling upgrade to
+refresh hooks and managed guidance. Keep committed bootstrap scripts synchronized
+with the adopted release templates.
+
+The 0.1.26 Claude bootstrap checks the adopted manifest version and reinstalls a
+stale project plugin when an update leaves it unchanged, preserving project
+settings. Run `/reload-plugins` afterward to activate the refreshed plugin.
+
 ## Limits
 
 - **Public repos only, and PRs only on request.** It opens draft PRs from its own fork, only for
